@@ -1,4 +1,5 @@
 pub mod server;
+pub mod tunnel;
 
 use std::path::{Path, PathBuf};
 
