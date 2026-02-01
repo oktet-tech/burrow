@@ -1,3 +1,4 @@
+pub mod sample;
 pub mod schema;
 pub mod validation;
 
