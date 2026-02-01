@@ -87,8 +87,8 @@ directories = "5"
 **Skip:** GUI, on-demand mode, network detection, reconnection, notifications
 
 ### Phase 2: Tunnel Lifecycle ← CURRENT
-- [ ] All tunnel types (local, reverse, socks)
-- [ ] Reconnection with exponential backoff
+- [x] All tunnel types (local, reverse, socks)
+- [x] Reconnection with exponential backoff
 - [ ] State persistence (state.json)
 - [ ] `tunnel add/remove/modify` CLI commands
 - [ ] Config reload without restart
