@@ -113,6 +113,8 @@ directories = "5"
 ### Phase 4: GUI ← CURRENT
 - [x] Module structure and dependencies (iced, tray-icon, muda, notify-rust)
 - [x] `burrow gui` CLI command (placeholder)
+- [x] Async IPC client (persistent connection, multiplexed requests, auto-reconnect)
+- [x] Log file tailer (async polling, rotation-aware, structured parsing)
 - [ ] Tray icon with status
 - [ ] Tray menu (tunnel list, quick actions)
 - [ ] Main window (tunnel list view)
