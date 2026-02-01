@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod service;
 pub mod tunnel_cmds;
 
 use clap::{Parser, Subcommand};
@@ -56,6 +57,11 @@ pub enum Commands {
     Daemon {
         #[command(subcommand)]
         command: DaemonCommand,
+    },
+    /// Install or uninstall as a system service
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
     },
     /// Run daemon in foreground (internal)
     #[command(hide = true, name = "daemon-foreground")]
@@ -215,4 +221,12 @@ pub enum DaemonCommand {
     Restart,
     /// Show daemon status
     Status,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ServiceCommand {
+    /// Install as a login service (auto-start on login)
+    Install,
+    /// Uninstall the login service
+    Uninstall,
 }

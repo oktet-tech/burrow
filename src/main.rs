@@ -6,7 +6,7 @@ mod ipc;
 
 use clap::Parser;
 
-use cli::{Cli, Commands, ConfigCommand, DaemonCommand, TunnelCommand};
+use cli::{Cli, Commands, ConfigCommand, DaemonCommand, ServiceCommand, TunnelCommand};
 
 fn main() {
     let cli = Cli::parse();
@@ -63,6 +63,10 @@ fn main() {
             DaemonCommand::Stop => cli::commands::daemon_stop(),
             DaemonCommand::Restart => cli::commands::daemon_restart(),
             DaemonCommand::Status => cli::commands::daemon_status(),
+        },
+        Some(Commands::Service { command }) => match command {
+            ServiceCommand::Install => cli::service::service_install(),
+            ServiceCommand::Uninstall => cli::service::service_uninstall(),
         },
         None => {
             println!("No command specified. Use 'burrow --help' for usage.");
