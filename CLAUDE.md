@@ -105,7 +105,7 @@ directories = "5"
 - [x] Port conflict detection and handling
 - [x] Log rotation
 - [x] First-run sample config generation
-- [ ] `burrow service install/uninstall`
+- [x] `burrow service install/uninstall`
 - [ ] Linux network detection (netlink)
 
 ### Phase 4: GUI
