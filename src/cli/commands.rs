@@ -182,6 +182,51 @@ pub fn disable(id: &str) {
     }
 }
 
+// -- Bulk commands --
+
+pub fn connect_all() {
+    bulk_command("tunnel.connect_all", "connected")
+}
+
+pub fn disconnect_all() {
+    bulk_command("tunnel.disconnect_all", "disconnected")
+}
+
+pub fn restart_all() {
+    bulk_command("tunnel.restart_all", "connected")
+}
+
+fn bulk_command(method: &str, verb: &str) {
+    match send_rpc(method, json!({})) {
+        Ok(resp) => {
+            if let Some(err) = resp.error {
+                eprintln!("error: {}", err.message);
+                std::process::exit(1);
+            }
+            if let Some(result) = resp.result {
+                let succeeded = result["succeeded"].as_u64().unwrap_or(0);
+                let failed = result["failed"].as_u64().unwrap_or(0);
+                if failed == 0 {
+                    println!("{verb} {succeeded} tunnels");
+                } else {
+                    println!("{verb} {succeeded} tunnels, {failed} failed");
+                    if let Some(errors) = result["errors"].as_array() {
+                        for e in errors {
+                            if let Some(s) = e.as_str() {
+                                eprintln!("  - {s}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            eprintln!("daemon is not running");
+            std::process::exit(1);
+        }
+    }
+}
+
 // -- Status command --
 
 pub fn status() {

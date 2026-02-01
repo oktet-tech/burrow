@@ -34,6 +34,12 @@ pub enum Commands {
         /// Tunnel ID
         id: String,
     },
+    /// Connect all enabled tunnels
+    ConnectAll,
+    /// Disconnect all connected tunnels
+    DisconnectAll,
+    /// Restart all enabled tunnels
+    RestartAll,
     /// Manage tunnel configuration
     Tunnel {
         #[command(subcommand)]
