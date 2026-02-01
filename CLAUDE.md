@@ -76,7 +76,7 @@ directories = "5"
 
 ## Development Phases
 
-### Phase 1: Foundation ← CURRENT
+### Phase 1: Foundation (done)
 - [x] Config module (schema.rs, validation.rs, loading)
 - [x] IPC protocol types (JSON-RPC request/response)
 - [x] Basic daemon (start, IPC listener, shutdown)
@@ -86,7 +86,7 @@ directories = "5"
 
 **Skip:** GUI, on-demand mode, network detection, reconnection, notifications
 
-### Phase 2: Tunnel Lifecycle
+### Phase 2: Tunnel Lifecycle ← CURRENT
 - [ ] All tunnel types (local, reverse, socks)
 - [ ] Reconnection with exponential backoff
 - [ ] State persistence (state.json)

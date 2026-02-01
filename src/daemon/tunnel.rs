@@ -390,6 +390,65 @@ mod tests {
     }
 
     #[test]
+    fn to_info_local_tunnel() {
+        let t = Tunnel::new("dev-db".into(), local_config(), &defaults());
+        let info = t.to_info();
+        assert_eq!(info.tunnel_type, "local");
+        assert_eq!(info.remote.as_deref(), Some("db.internal:5432"));
+        assert_eq!(info.local_port, 5432);
+    }
+
+    #[test]
+    fn to_info_reverse_tunnel() {
+        let config = TunnelConfig {
+            name: "Expose API".into(),
+            host: "jump.example.com".into(),
+            port: 22,
+            tunnel_type: TunnelType::Reverse,
+            mode: TunnelMode::Manual,
+            local_port: 8080,
+            remote_host: None,
+            remote_port: Some(9000),
+            local_host: None,
+            remote_bind: Some("0.0.0.0".into()),
+            identity: None,
+            jump_host: None,
+            jump_port: None,
+            ssh_binary: None,
+            keepalive: None,
+        };
+        let t = Tunnel::new("expose-api".into(), config, &defaults());
+        let info = t.to_info();
+        assert_eq!(info.tunnel_type, "reverse");
+        assert_eq!(info.remote.as_deref(), Some("0.0.0.0:9000"));
+    }
+
+    #[test]
+    fn to_info_socks_tunnel() {
+        let config = TunnelConfig {
+            name: "SOCKS Proxy".into(),
+            host: "home.example.com".into(),
+            port: 22,
+            tunnel_type: TunnelType::Socks,
+            mode: TunnelMode::OnDemand,
+            local_port: 1080,
+            remote_host: None,
+            remote_port: None,
+            local_host: None,
+            remote_bind: None,
+            identity: None,
+            jump_host: None,
+            jump_port: None,
+            ssh_binary: None,
+            keepalive: None,
+        };
+        let t = Tunnel::new("proxy".into(), config, &defaults());
+        let info = t.to_info();
+        assert_eq!(info.tunnel_type, "socks");
+        assert_eq!(info.remote.as_deref(), Some("SOCKS5"));
+    }
+
+    #[test]
     fn initial_status_is_disconnected() {
         let t = Tunnel::new("t".into(), local_config(), &defaults());
         assert_eq!(t.status, TunnelStatus::Disconnected);

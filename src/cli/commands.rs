@@ -186,8 +186,18 @@ fn status_indicator(status: TunnelStatus) -> &'static str {
     }
 }
 
+fn direction_arrow(tunnel_type: &str) -> &'static str {
+    match tunnel_type {
+        "local" => "\u{2192}",   // →
+        "reverse" => "\u{2190}", // ←
+        "socks" => "\u{21c4}",   // ⇄
+        _ => "\u{2192}",
+    }
+}
+
 fn format_tunnel_table(tunnels: &[TunnelInfo]) -> String {
-    let mut rows: Vec<[String; 4]> = Vec::with_capacity(tunnels.len());
+    // Each row: [name, status, local, remote, tunnel_type]
+    let mut rows: Vec<[String; 5]> = Vec::with_capacity(tunnels.len());
 
     for t in tunnels {
         let local = format!("localhost:{}", t.local_port);
@@ -197,6 +207,7 @@ fn format_tunnel_table(tunnels: &[TunnelInfo]) -> String {
             status_indicator(t.status).to_string(),
             local,
             remote,
+            t.tunnel_type.clone(),
         ]);
     }
 
@@ -222,9 +233,10 @@ fn format_tunnel_table(tunnels: &[TunnelInfo]) -> String {
     // Rows
     for row in &rows {
         let pad = w[1].saturating_sub(display_width(&row[1]));
+        let arrow = direction_arrow(&row[4]);
         out.push_str(&format!(
-            "{:<w0$}  {}{:<pad$}  {:<w2$}  \u{2192}  {}\n",
-            row[0], row[1], "", row[2], row[3],
+            "{:<w0$}  {}{:<pad$}  {:<w2$}  {}  {}\n",
+            row[0], row[1], "", row[2], arrow, row[3],
             w0 = w[0], pad = pad, w2 = w[2],
         ));
     }
@@ -334,8 +346,9 @@ mod tests {
         assert_eq!(format_uptime(90061), "1d 1h 1m");
     }
 
-    fn make_tunnel(
+    fn make_tunnel_typed(
         name: &str,
+        tunnel_type: &str,
         status: TunnelStatus,
         local_port: u16,
         remote: Option<&str>,
@@ -344,7 +357,7 @@ mod tests {
         TunnelInfo {
             id: name.to_lowercase().replace(' ', "-"),
             name: name.to_string(),
-            tunnel_type: "local".to_string(),
+            tunnel_type: tunnel_type.to_string(),
             mode: "auto".to_string(),
             status,
             local_port,
@@ -356,6 +369,16 @@ mod tests {
         }
     }
 
+    fn make_tunnel(
+        name: &str,
+        status: TunnelStatus,
+        local_port: u16,
+        remote: Option<&str>,
+        last_error: Option<&str>,
+    ) -> TunnelInfo {
+        make_tunnel_typed(name, "local", status, local_port, remote, last_error)
+    }
+
     #[test]
     fn status_indicators() {
         assert_eq!(status_indicator(TunnelStatus::Connected), "\u{25cf} connected");
@@ -365,7 +388,14 @@ mod tests {
     }
 
     #[test]
-    fn table_single_connected() {
+    fn direction_arrows() {
+        assert_eq!(direction_arrow("local"), "\u{2192}");
+        assert_eq!(direction_arrow("reverse"), "\u{2190}");
+        assert_eq!(direction_arrow("socks"), "\u{21c4}");
+    }
+
+    #[test]
+    fn table_local_uses_right_arrow() {
         let tunnels = vec![make_tunnel(
             "Dev Database",
             TunnelStatus::Connected,
@@ -376,18 +406,48 @@ mod tests {
         let out = format_tunnel_table(&tunnels);
         let lines: Vec<&str> = out.lines().collect();
 
-        // Header
         assert!(lines[0].contains("TUNNEL"));
         assert!(lines[0].contains("STATUS"));
         assert!(lines[0].contains("LOCAL"));
         assert!(lines[0].contains("REMOTE"));
 
-        // Data row
         assert!(lines[1].contains("Dev Database"));
         assert!(lines[1].contains("\u{25cf} connected"));
         assert!(lines[1].contains("localhost:5432"));
-        assert!(lines[1].contains("\u{2192}"));
+        assert!(lines[1].contains("\u{2192}")); // →
         assert!(lines[1].contains("db.internal:5432"));
+    }
+
+    #[test]
+    fn table_reverse_uses_left_arrow() {
+        let tunnels = vec![make_tunnel_typed(
+            "Expose API",
+            "reverse",
+            TunnelStatus::Connected,
+            8080,
+            Some("0.0.0.0:9000"),
+            None,
+        )];
+        let out = format_tunnel_table(&tunnels);
+        let line = out.lines().nth(1).unwrap();
+        assert!(line.contains("\u{2190}")); // ←
+        assert!(line.contains("0.0.0.0:9000"));
+    }
+
+    #[test]
+    fn table_socks_uses_bidir_arrow() {
+        let tunnels = vec![make_tunnel_typed(
+            "Proxy",
+            "socks",
+            TunnelStatus::Connected,
+            1080,
+            Some("SOCKS5"),
+            None,
+        )];
+        let out = format_tunnel_table(&tunnels);
+        let line = out.lines().nth(1).unwrap();
+        assert!(line.contains("\u{21c4}")); // ⇄
+        assert!(line.contains("SOCKS5"));
     }
 
     #[test]
@@ -421,22 +481,29 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 3); // header + 2 rows
 
-        // Both name columns should be padded to same width
         assert!(lines[1].starts_with("DB"));
         assert!(lines[2].starts_with("Long Tunnel Name"));
     }
 
     #[test]
-    fn table_socks_shows_socks5_remote() {
-        let tunnels = vec![make_tunnel(
-            "Proxy",
-            TunnelStatus::Connected,
-            1080,
-            Some("SOCKS5"),
-            None,
-        )];
+    fn table_mixed_types_show_correct_arrows() {
+        let tunnels = vec![
+            make_tunnel_typed(
+                "DB", "local", TunnelStatus::Connected, 5432, Some("db:5432"), None,
+            ),
+            make_tunnel_typed(
+                "API", "reverse", TunnelStatus::Connected, 8080, Some("0.0.0.0:9000"), None,
+            ),
+            make_tunnel_typed(
+                "Proxy", "socks", TunnelStatus::Connected, 1080, Some("SOCKS5"), None,
+            ),
+        ];
         let out = format_tunnel_table(&tunnels);
-        assert!(out.contains("SOCKS5"));
+        let lines: Vec<&str> = out.lines().collect();
+
+        assert!(lines[1].contains("\u{2192}")); // local →
+        assert!(lines[2].contains("\u{2190}")); // reverse ←
+        assert!(lines[3].contains("\u{21c4}")); // socks ⇄
     }
 
     #[test]
