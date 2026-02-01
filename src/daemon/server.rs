@@ -141,6 +141,14 @@ async fn handle_request(
             Ok(()) => RpcResponse::success(id, json!({ "status": "disconnected" })),
             Err(msg) => RpcResponse::error(id, protocol::TUNNEL_NOT_FOUND, msg),
         },
+        Request::TunnelEnable { id: tid } => match mgr.enable(&tid).await {
+            Ok(()) => RpcResponse::success(id, json!({ "status": "enabled" })),
+            Err(msg) => RpcResponse::error(id, protocol::TUNNEL_NOT_FOUND, msg),
+        },
+        Request::TunnelDisable { id: tid } => match mgr.disable(&tid).await {
+            Ok(()) => RpcResponse::success(id, json!({ "status": "disabled" })),
+            Err(msg) => RpcResponse::error(id, protocol::TUNNEL_NOT_FOUND, msg),
+        },
         Request::DaemonStatus => {
             let uptime = started.elapsed().as_secs();
             let tunnel_count = mgr.tunnel_count().await;

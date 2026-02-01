@@ -139,6 +139,8 @@ pub enum Request {
     TunnelGet { id: String },
     TunnelConnect { id: String },
     TunnelDisconnect { id: String },
+    TunnelEnable { id: String },
+    TunnelDisable { id: String },
     DaemonStatus,
     DaemonShutdown,
     ConfigReload,
@@ -169,6 +171,12 @@ impl Request {
                 id: parse_tunnel_id(&req.params)?,
             }),
             "tunnel.disconnect" => Ok(Self::TunnelDisconnect {
+                id: parse_tunnel_id(&req.params)?,
+            }),
+            "tunnel.enable" => Ok(Self::TunnelEnable {
+                id: parse_tunnel_id(&req.params)?,
+            }),
+            "tunnel.disable" => Ok(Self::TunnelDisable {
                 id: parse_tunnel_id(&req.params)?,
             }),
             "daemon.status" => Ok(Self::DaemonStatus),

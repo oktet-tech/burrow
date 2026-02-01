@@ -163,6 +163,62 @@ impl TunnelManager {
         Ok(())
     }
 
+    /// Enable a tunnel. If mode==auto, also connect it.
+    pub async fn enable(&self, id: &str) -> Result<(), String> {
+        {
+            let mut state = self.inner.lock().await;
+            let mt = state
+                .tunnels
+                .get_mut(id)
+                .ok_or_else(|| format!("tunnel '{id}' not found"))?;
+
+            if mt.tunnel.enabled {
+                return Ok(());
+            }
+            mt.tunnel.enabled = true;
+            state.state_dirty.notify_one();
+        }
+
+        // Auto-connect outside the lock to avoid holding it during SSH spawn
+        if self.should_auto_connect(id).await {
+            if let Err(e) = self.connect(id).await {
+                tracing::warn!(tunnel_id = %id, error = %e, "enabled but failed to auto-connect");
+            }
+        }
+        Ok(())
+    }
+
+    /// Disable a tunnel. Disconnects if currently connected.
+    pub async fn disable(&self, id: &str) -> Result<(), String> {
+        let was_active = {
+            let mut state = self.inner.lock().await;
+            let mt = state
+                .tunnels
+                .get_mut(id)
+                .ok_or_else(|| format!("tunnel '{id}' not found"))?;
+
+            mt.tunnel.enabled = false;
+            let active = mt.tunnel.status == TunnelStatus::Connected
+                || mt.tunnel.status == TunnelStatus::Connecting;
+            state.state_dirty.notify_one();
+            active
+        };
+
+        if was_active {
+            self.disconnect(id).await?;
+        }
+        Ok(())
+    }
+
+    async fn should_auto_connect(&self, id: &str) -> bool {
+        let state = self.inner.lock().await;
+        state
+            .tunnels
+            .get(id)
+            .map(|mt| mt.tunnel.config().mode == TunnelMode::Auto)
+            .unwrap_or(false)
+    }
+
     /// Snapshot of all tunnels for IPC responses.
     pub async fn list(&self) -> Vec<TunnelInfo> {
         let state = self.inner.lock().await;

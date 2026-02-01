@@ -174,7 +174,7 @@ impl Tunnel {
 
     /// Whether this tunnel should auto-reconnect after an unexpected exit.
     pub fn should_reconnect(&self) -> bool {
-        self.config.mode == TunnelMode::Auto && self.status == TunnelStatus::Error
+        self.enabled && self.config.mode == TunnelMode::Auto && self.status == TunnelStatus::Error
     }
 
     /// Mark as disconnected (user-initiated stop).
