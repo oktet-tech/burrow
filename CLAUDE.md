@@ -100,7 +100,7 @@ directories = "5"
 - [x] `connect-all`, `disconnect-all`, `restart-all`
 
 ### Phase 3: Robustness ← CURRENT
-- [ ] Network change detection (macOS: SCNetworkReachability)
+- [x] Network change detection (macOS: SCNetworkReachability)
 - [x] On-demand stub listeners
 - [x] Port conflict detection and handling
 - [x] Log rotation
