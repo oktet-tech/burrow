@@ -138,7 +138,10 @@ async fn handle_request(
             Err(msg) => RpcResponse::error(id, protocol::TUNNEL_NOT_FOUND, msg),
         },
         Request::TunnelDisconnect { id: tid } => match mgr.disconnect(&tid).await {
-            Ok(()) => RpcResponse::success(id, json!({ "status": "disconnected" })),
+            Ok(()) => {
+                mgr.restart_stub_if_needed(&tid).await;
+                RpcResponse::success(id, json!({ "status": "disconnected" }))
+            }
             Err(msg) => RpcResponse::error(id, protocol::TUNNEL_NOT_FOUND, msg),
         },
         Request::TunnelEnable { id: tid } => match mgr.enable(&tid).await {
@@ -155,6 +158,7 @@ async fn handle_request(
         }
         Request::TunnelDisconnectAll => {
             let result = mgr.disconnect_all().await;
+            mgr.start_on_demand_stubs().await;
             RpcResponse::success(id, result)
         }
         Request::TunnelRestartAll => {
