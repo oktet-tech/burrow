@@ -99,7 +99,7 @@ directories = "5"
 - [x] `enable/disable` commands
 - [x] `connect-all`, `disconnect-all`, `restart-all`
 
-### Phase 3: Robustness ← CURRENT
+### Phase 3: Robustness
 - [x] Network change detection (macOS: SCNetworkReachability)
 - [x] On-demand stub listeners
 - [x] Port conflict detection and handling
@@ -110,7 +110,9 @@ directories = "5"
 - [x] Daemon fail-fast on invalid config
 - [ ] Linux network detection (netlink)
 
-### Phase 4: GUI
+### Phase 4: GUI ← CURRENT
+- [x] Module structure and dependencies (iced, tray-icon, muda, notify-rust)
+- [x] `burrow gui` CLI command (placeholder)
 - [ ] Tray icon with status
 - [ ] Tray menu (tunnel list, quick actions)
 - [ ] Main window (tunnel list view)
