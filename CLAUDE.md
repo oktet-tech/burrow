@@ -104,7 +104,7 @@ directories = "5"
 - [ ] On-demand stub listeners
 - [x] Port conflict detection and handling
 - [ ] Log rotation
-- [ ] First-run sample config generation
+- [x] First-run sample config generation
 - [ ] `burrow service install/uninstall`
 - [ ] Linux network detection (netlink)
 
