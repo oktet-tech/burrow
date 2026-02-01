@@ -5,7 +5,7 @@ mod ipc;
 
 use clap::Parser;
 
-use cli::{Cli, Commands, DaemonCommand};
+use cli::{Cli, Commands, DaemonCommand, TunnelCommand};
 
 fn main() {
     let cli = Cli::parse();
@@ -14,6 +14,12 @@ fn main() {
         Some(Commands::Status) => cli::commands::status(),
         Some(Commands::Connect { ref id }) => cli::commands::connect(id),
         Some(Commands::Disconnect { ref id }) => cli::commands::disconnect(id),
+        Some(Commands::Tunnel { command }) => match command {
+            TunnelCommand::Add(args) => cli::tunnel_cmds::tunnel_add(args),
+            TunnelCommand::Remove { ref id, force } => cli::tunnel_cmds::tunnel_remove(id, force),
+            TunnelCommand::Modify(args) => cli::tunnel_cmds::tunnel_modify(args),
+            TunnelCommand::Show { ref id } => cli::tunnel_cmds::tunnel_show(id),
+        },
         Some(Commands::DaemonForeground) => run_daemon_foreground(),
         Some(Commands::Daemon { command }) => match command {
             DaemonCommand::Start => cli::commands::daemon_start(),

@@ -262,7 +262,7 @@ fn display_width(s: &str) -> usize {
 // -- Helpers --
 
 /// Send a JSON-RPC request to the daemon and read one response.
-fn send_rpc(method: &str, params: serde_json::Value) -> Result<RpcResponse, RpcClientError> {
+pub(crate) fn send_rpc(method: &str, params: serde_json::Value) -> Result<RpcResponse, RpcClientError> {
     let socket = daemon::socket_path();
     let mut stream = UnixStream::connect(&socket)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -315,7 +315,7 @@ fn format_uptime(seconds: u64) -> String {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum RpcClientError {
+pub(crate) enum RpcClientError {
     #[error("{0}")]
     Io(#[from] std::io::Error),
     #[error("{0}")]
