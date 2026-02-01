@@ -1,4 +1,5 @@
 pub mod manager;
+pub mod network;
 pub mod server;
 pub mod state;
 pub mod stub;
@@ -95,6 +96,9 @@ pub async fn run() -> Result<(), DaemonError> {
 
     // Bind stub listeners for on-demand tunnels
     mgr.start_on_demand_stubs().await;
+
+    // Monitor network changes to recover tunnels quickly
+    network::spawn_network_monitor(mgr.clone());
 
     tracing::info!("starting daemon, socket: {}", path.display());
 
