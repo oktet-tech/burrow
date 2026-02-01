@@ -79,7 +79,7 @@ directories = "5"
 ### Phase 1: Foundation ← CURRENT
 - [x] Config module (schema.rs, validation.rs, loading)
 - [x] IPC protocol types (JSON-RPC request/response)
-- [ ] Basic daemon (start, IPC listener, shutdown)
+- [x] Basic daemon (start, IPC listener, shutdown)
 - [ ] CLI skeleton (clap, daemon start/stop/status)
 - [ ] Single tunnel spawn (SSH process, exit detection)
 - [ ] Basic `burrow status` showing tunnel states
