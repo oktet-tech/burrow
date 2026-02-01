@@ -10,6 +10,31 @@ use cli::{Cli, Commands, ConfigCommand, DaemonCommand, TunnelCommand};
 fn main() {
     let cli = Cli::parse();
 
+    // First-run: create sample config if it doesn't exist.
+    // Skip for commands that handle missing config themselves.
+    if !matches!(
+        cli.command,
+        Some(Commands::Config {
+            command: ConfigCommand::Path
+        }) | Some(Commands::Config {
+            command: ConfigCommand::Edit
+        }) | Some(Commands::DaemonForeground)
+    ) {
+        if let Some(path) = config::sample::ensure_config_exists() {
+            println!("Created sample configuration at: {}", path.display());
+            println!();
+            println!("Edit the config file to add your tunnels, then run:");
+            println!("  burrow config reload");
+            println!();
+            println!("Or add a tunnel with:");
+            println!(
+                "  burrow tunnel add my-tunnel --name \"My Tunnel\" --host example.com --type local \\"
+            );
+            println!("    --local-port 5432 --remote-host db.internal --remote-port 5432");
+            return;
+        }
+    }
+
     match cli.command {
         Some(Commands::Status) => cli::commands::status(),
         Some(Commands::Connect { ref id }) => cli::commands::connect(id),
@@ -26,6 +51,8 @@ fn main() {
             TunnelCommand::Show { ref id } => cli::tunnel_cmds::tunnel_show(id),
         },
         Some(Commands::Config { command }) => match command {
+            ConfigCommand::Path => cli::commands::config_path(),
+            ConfigCommand::Edit => cli::commands::config_edit(),
             ConfigCommand::Reload => cli::commands::config_reload(),
         },
         Some(Commands::DaemonForeground) => run_daemon_foreground(),
