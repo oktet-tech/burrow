@@ -14,6 +14,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 directories = "5"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+iced = { version = "0.13", features = ["tokio"] }
+tray-icon = "0.19"
+muda = "0.15"
+notify-rust = "4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 system-configuration = "0.6"
