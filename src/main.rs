@@ -1,4 +1,5 @@
 mod cli;
+mod common;
 mod config;
 mod daemon;
 mod ipc;
@@ -44,6 +45,7 @@ fn main() {
         Some(Commands::ConnectAll) => cli::commands::connect_all(),
         Some(Commands::DisconnectAll) => cli::commands::disconnect_all(),
         Some(Commands::RestartAll) => cli::commands::restart_all(),
+        Some(Commands::Logs(ref args)) => cli::commands::logs(args),
         Some(Commands::Tunnel { command }) => match command {
             TunnelCommand::Add(args) => cli::tunnel_cmds::tunnel_add(args),
             TunnelCommand::Remove { ref id, force } => cli::tunnel_cmds::tunnel_remove(id, force),
@@ -70,12 +72,7 @@ fn main() {
 
 /// Hidden entry point for the spawned daemon process.
 fn run_daemon_foreground() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("BURROW_LOG")
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    common::logging::init_logging();
 
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
