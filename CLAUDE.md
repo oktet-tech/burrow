@@ -92,7 +92,7 @@ directories = "5"
 - [x] State persistence (state.json)
 - [x] `tunnel add/remove/modify` CLI commands
 - [x] Config reload without restart
-- [ ] `enable/disable` commands
+- [x] `enable/disable` commands
 - [ ] `connect-all`, `disconnect-all`, `restart-all`
 
 ### Phase 3: Robustness
