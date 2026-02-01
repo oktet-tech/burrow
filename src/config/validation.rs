@@ -116,7 +116,7 @@ pub fn validate_config(config: &Config) -> ValidationResult {
 
 /// Tunnel IDs must be lowercase alphanumeric with hyphens, non-empty,
 /// and must not start or end with a hyphen.
-fn is_valid_tunnel_id(id: &str) -> bool {
+pub fn is_valid_tunnel_id(id: &str) -> bool {
     if id.is_empty() {
         return false;
     }

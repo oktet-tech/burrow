@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Top-level configuration file structure.
 ///
@@ -15,7 +15,7 @@ use serde::Deserialize;
 /// name = "..."
 /// ...
 /// ```
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub defaults: Defaults,
@@ -23,12 +23,13 @@ pub struct Config {
     pub tunnel: HashMap<String, TunnelConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Defaults {
     #[serde(default = "default_ssh_binary")]
     pub ssh_binary: String,
     #[serde(default = "default_true")]
     pub keepalive: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub log_level: Option<String>,
 }
 
@@ -50,7 +51,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TunnelType {
     Local,
@@ -68,7 +69,7 @@ impl fmt::Display for TunnelType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TunnelMode {
     Auto,
@@ -93,7 +94,7 @@ impl fmt::Display for TunnelMode {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelConfig {
     /// Human-readable name (required).
     pub name: String,
@@ -113,24 +114,33 @@ pub struct TunnelConfig {
     /// Local bind port (required for all types).
     pub local_port: u16,
     /// Target host (required for local forwards).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_host: Option<String>,
     /// Target port (required for local and reverse forwards).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_port: Option<u16>,
     /// Local bind address for reverse forwards (default: 127.0.0.1).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub local_host: Option<String>,
     /// Remote bind address for reverse forwards (default: localhost).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_bind: Option<String>,
 
     // -- SSH options (per-tunnel overrides) --
     /// SSH identity file path (~ is expanded).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub identity: Option<String>,
     /// ProxyJump host.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub jump_host: Option<String>,
     /// ProxyJump port (default: 22).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub jump_port: Option<u16>,
     /// Override SSH binary for this tunnel.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ssh_binary: Option<String>,
     /// Override keepalive setting for this tunnel.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub keepalive: Option<bool>,
 }
 

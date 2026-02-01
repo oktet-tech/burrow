@@ -4,7 +4,7 @@ pub mod validation;
 use std::path::{Path, PathBuf};
 
 pub use schema::{Config, Defaults, TunnelConfig, TunnelMode, TunnelType};
-pub use validation::{expand_tilde, validate_config};
+pub use validation::{expand_tilde, is_valid_tunnel_id, validate_config};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -16,6 +16,10 @@ pub enum ConfigError {
     Validation(Vec<validation::ValidationError>),
     #[error("config file not found: {}", .0.display())]
     NotFound(PathBuf),
+    #[error("failed to serialize config: {0}")]
+    Serialize(String),
+    #[error("failed to write config: {0}")]
+    Write(String),
 }
 
 fn format_errors(errors: &[validation::ValidationError]) -> String {
@@ -98,6 +102,31 @@ pub fn load_config_from(path: &Path) -> Result<Config, ConfigError> {
     }
 
     Ok(config)
+}
+
+/// Atomically write config to the given path (write tmp + rename).
+pub fn save_config_to(path: &Path, config: &Config) -> Result<(), ConfigError> {
+    let toml_str =
+        toml::to_string_pretty(config).map_err(|e| ConfigError::Serialize(e.to_string()))?;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| ConfigError::Write("config path has no parent directory".into()))?;
+    std::fs::create_dir_all(parent)?;
+
+    let tmp_path = parent.join(".config.toml.tmp");
+    std::fs::write(&tmp_path, toml_str.as_bytes())?;
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        ConfigError::Write(format!("rename failed: {e}"))
+    })?;
+
+    Ok(())
+}
+
+/// Save config to the default platform path.
+pub fn save_config(config: &Config) -> Result<(), ConfigError> {
+    save_config_to(&config_path(), config)
 }
 
 #[cfg(test)]
@@ -190,5 +219,52 @@ identity = "~/.ssh/id_rsa"
         let config = load_config_from(&path).unwrap();
         let identity = config.tunnel["t"].identity.as_ref().unwrap();
         assert!(!identity.starts_with('~'));
+    }
+
+    #[test]
+    fn save_and_reload_roundtrip() {
+        use crate::config::schema::{Defaults, TunnelConfig, TunnelMode, TunnelType};
+        use std::collections::HashMap;
+
+        let mut tunnels = HashMap::new();
+        tunnels.insert(
+            "dev-db".to_string(),
+            TunnelConfig {
+                name: "Dev Database".to_string(),
+                host: "bastion.example.com".to_string(),
+                port: 22,
+                tunnel_type: TunnelType::Local,
+                mode: TunnelMode::Auto,
+                local_port: 5432,
+                remote_host: Some("db.internal".to_string()),
+                remote_port: Some(5432),
+                local_host: None,
+                remote_bind: None,
+                identity: None,
+                jump_host: None,
+                jump_port: None,
+                ssh_binary: None,
+                keepalive: None,
+            },
+        );
+        let config = Config {
+            defaults: Defaults::default(),
+            tunnel: tunnels,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        save_config_to(&path, &config).unwrap();
+        let loaded = load_config_from(&path).unwrap();
+
+        assert_eq!(loaded.tunnel.len(), 1);
+        let t = &loaded.tunnel["dev-db"];
+        assert_eq!(t.name, "Dev Database");
+        assert_eq!(t.host, "bastion.example.com");
+        assert_eq!(t.tunnel_type, TunnelType::Local);
+        assert_eq!(t.local_port, 5432);
+        assert_eq!(t.remote_host.as_deref(), Some("db.internal"));
+        assert_eq!(t.remote_port, Some(5432));
     }
 }
