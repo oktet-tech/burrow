@@ -103,7 +103,7 @@ directories = "5"
 - [ ] Network change detection (macOS: SCNetworkReachability)
 - [ ] On-demand stub listeners
 - [x] Port conflict detection and handling
-- [ ] Log rotation
+- [x] Log rotation
 - [x] First-run sample config generation
 - [ ] `burrow service install/uninstall`
 - [ ] Linux network detection (netlink)
