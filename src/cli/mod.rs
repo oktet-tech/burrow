@@ -63,6 +63,8 @@ pub enum Commands {
         #[command(subcommand)]
         command: ServiceCommand,
     },
+    /// Launch the menu bar GUI
+    Gui,
     /// Run daemon in foreground (internal)
     #[command(hide = true, name = "daemon-foreground")]
     DaemonForeground,

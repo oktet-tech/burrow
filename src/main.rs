@@ -2,6 +2,7 @@ mod cli;
 mod common;
 mod config;
 mod daemon;
+mod gui;
 mod ipc;
 
 use clap::Parser;
@@ -60,6 +61,7 @@ fn main() {
             ConfigCommand::Validate => cli::commands::config_validate(),
             ConfigCommand::Reload => cli::commands::config_reload(),
         },
+        Some(Commands::Gui) => gui::launch(),
         Some(Commands::DaemonForeground) => run_daemon_foreground(),
         Some(Commands::Daemon { command }) => match command {
             DaemonCommand::Start => cli::commands::daemon_start(),
