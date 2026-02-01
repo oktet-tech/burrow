@@ -11,6 +11,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
+    /// Show tunnel status
+    Status,
     /// Manage the background daemon
     Daemon {
         #[command(subcommand)]

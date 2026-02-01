@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use crate::daemon;
-use crate::ipc::protocol::{DaemonInfo, RpcRequest, RpcResponse, JSONRPC_VERSION};
+use crate::ipc::protocol::{
+    DaemonInfo, RpcRequest, RpcResponse, TunnelInfo, TunnelStatus, JSONRPC_VERSION,
+};
 
 // -- Daemon commands --
 
@@ -114,6 +116,103 @@ pub fn daemon_status() {
     }
 }
 
+// -- Status command --
+
+pub fn status() {
+    match send_rpc("tunnel.list", json!({})) {
+        Ok(resp) => {
+            if let Some(err) = resp.error {
+                eprintln!("error: {}", err.message);
+                std::process::exit(1);
+            }
+            let result = resp.result.unwrap_or_default();
+            let tunnels: Vec<TunnelInfo> = match result.get("tunnels") {
+                Some(v) => serde_json::from_value(v.clone()).unwrap_or_default(),
+                None => Vec::new(),
+            };
+            if tunnels.is_empty() {
+                println!("No tunnels configured.");
+                return;
+            }
+            print!("{}", format_tunnel_table(&tunnels));
+        }
+        Err(_) => {
+            eprintln!("daemon is not running");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn status_indicator(status: TunnelStatus) -> &'static str {
+    match status {
+        TunnelStatus::Connected => "\u{25cf} connected",
+        TunnelStatus::Disconnected => "\u{25cb} disconnected",
+        TunnelStatus::Connecting => "\u{25d0} connecting",
+        TunnelStatus::Error => "\u{26a0} error",
+    }
+}
+
+fn format_tunnel_table(tunnels: &[TunnelInfo]) -> String {
+    let mut rows: Vec<[String; 4]> = Vec::with_capacity(tunnels.len());
+
+    for t in tunnels {
+        let local = format!("localhost:{}", t.local_port);
+        let remote = t.remote.as_deref().unwrap_or("-").to_string();
+        rows.push([
+            t.name.clone(),
+            status_indicator(t.status).to_string(),
+            local,
+            remote,
+        ]);
+    }
+
+    // Column widths (minimum = header length)
+    let mut w = [6usize, 14, 5, 6]; // TUNNEL, STATUS (unicode widths), LOCAL, REMOTE
+    for row in &rows {
+        w[0] = w[0].max(row[0].len());
+        // Status column: display width differs from byte length due to unicode
+        w[1] = w[1].max(display_width(&row[1]));
+        w[2] = w[2].max(row[2].len());
+        w[3] = w[3].max(row[3].len());
+    }
+
+    let mut out = String::new();
+
+    // Header
+    out.push_str(&format!(
+        "{:<w0$}  {:<w1$}  {:<w2$}     {:<w3$}\n",
+        "TUNNEL", "STATUS", "LOCAL", "REMOTE",
+        w0 = w[0], w1 = w[1], w2 = w[2], w3 = w[3],
+    ));
+
+    // Rows
+    for row in &rows {
+        let pad = w[1].saturating_sub(display_width(&row[1]));
+        out.push_str(&format!(
+            "{:<w0$}  {}{:<pad$}  {:<w2$}  \u{2192}  {}\n",
+            row[0], row[1], "", row[2], row[3],
+            w0 = w[0], pad = pad, w2 = w[2],
+        ));
+    }
+
+    // Error details below the table
+    for t in tunnels {
+        if let Some(ref err) = t.last_error {
+            out.push_str(&format!("  {} error: {}\n", t.name, err));
+        }
+    }
+
+    out
+}
+
+/// Approximate display width accounting for multi-byte unicode symbols.
+/// The status indicators (●○◐⚠) each occupy ~2 display columns in most terminals.
+fn display_width(s: &str) -> usize {
+    s.chars()
+        .map(|c| if c.is_ascii() { 1 } else { 2 })
+        .sum()
+}
+
 // -- Helpers --
 
 /// Send a JSON-RPC request to the daemon and read one response.
@@ -199,5 +298,123 @@ mod tests {
     #[test]
     fn uptime_days() {
         assert_eq!(format_uptime(90061), "1d 1h 1m");
+    }
+
+    fn make_tunnel(
+        name: &str,
+        status: TunnelStatus,
+        local_port: u16,
+        remote: Option<&str>,
+        last_error: Option<&str>,
+    ) -> TunnelInfo {
+        TunnelInfo {
+            id: name.to_lowercase().replace(' ', "-"),
+            name: name.to_string(),
+            tunnel_type: "local".to_string(),
+            mode: "auto".to_string(),
+            status,
+            local_port,
+            remote: remote.map(String::from),
+            host: "example.com".to_string(),
+            enabled: true,
+            last_error: last_error.map(String::from),
+            stats: None,
+        }
+    }
+
+    #[test]
+    fn status_indicators() {
+        assert_eq!(status_indicator(TunnelStatus::Connected), "\u{25cf} connected");
+        assert_eq!(status_indicator(TunnelStatus::Disconnected), "\u{25cb} disconnected");
+        assert_eq!(status_indicator(TunnelStatus::Connecting), "\u{25d0} connecting");
+        assert_eq!(status_indicator(TunnelStatus::Error), "\u{26a0} error");
+    }
+
+    #[test]
+    fn table_single_connected() {
+        let tunnels = vec![make_tunnel(
+            "Dev Database",
+            TunnelStatus::Connected,
+            5432,
+            Some("db.internal:5432"),
+            None,
+        )];
+        let out = format_tunnel_table(&tunnels);
+        let lines: Vec<&str> = out.lines().collect();
+
+        // Header
+        assert!(lines[0].contains("TUNNEL"));
+        assert!(lines[0].contains("STATUS"));
+        assert!(lines[0].contains("LOCAL"));
+        assert!(lines[0].contains("REMOTE"));
+
+        // Data row
+        assert!(lines[1].contains("Dev Database"));
+        assert!(lines[1].contains("\u{25cf} connected"));
+        assert!(lines[1].contains("localhost:5432"));
+        assert!(lines[1].contains("\u{2192}"));
+        assert!(lines[1].contains("db.internal:5432"));
+    }
+
+    #[test]
+    fn table_error_shows_detail() {
+        let tunnels = vec![make_tunnel(
+            "Broken",
+            TunnelStatus::Error,
+            3000,
+            Some("host:3000"),
+            Some("exited with code 255"),
+        )];
+        let out = format_tunnel_table(&tunnels);
+
+        assert!(out.contains("\u{26a0} error"));
+        assert!(out.contains("Broken error: exited with code 255"));
+    }
+
+    #[test]
+    fn table_multiple_tunnels_aligned() {
+        let tunnels = vec![
+            make_tunnel("DB", TunnelStatus::Connected, 5432, Some("db:5432"), None),
+            make_tunnel(
+                "Long Tunnel Name",
+                TunnelStatus::Disconnected,
+                8080,
+                Some("api:8080"),
+                None,
+            ),
+        ];
+        let out = format_tunnel_table(&tunnels);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3); // header + 2 rows
+
+        // Both name columns should be padded to same width
+        assert!(lines[1].starts_with("DB"));
+        assert!(lines[2].starts_with("Long Tunnel Name"));
+    }
+
+    #[test]
+    fn table_socks_shows_socks5_remote() {
+        let tunnels = vec![make_tunnel(
+            "Proxy",
+            TunnelStatus::Connected,
+            1080,
+            Some("SOCKS5"),
+            None,
+        )];
+        let out = format_tunnel_table(&tunnels);
+        assert!(out.contains("SOCKS5"));
+    }
+
+    #[test]
+    fn table_no_remote_shows_dash() {
+        let tunnels = vec![make_tunnel(
+            "Mystery",
+            TunnelStatus::Disconnected,
+            9999,
+            None,
+            None,
+        )];
+        let out = format_tunnel_table(&tunnels);
+        assert!(out.contains("\u{2192}  -"));
     }
 }

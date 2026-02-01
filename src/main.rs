@@ -11,6 +11,7 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Some(Commands::Status) => cli::commands::status(),
         Some(Commands::DaemonForeground) => run_daemon_foreground(),
         Some(Commands::Daemon { command }) => match command {
             DaemonCommand::Start => cli::commands::daemon_start(),
