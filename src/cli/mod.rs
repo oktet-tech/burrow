@@ -185,6 +185,10 @@ pub struct TunnelModifyArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
+    /// Print config file path
+    Path,
+    /// Open config file in $EDITOR
+    Edit,
     /// Reload config file in the running daemon
     Reload,
 }

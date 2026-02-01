@@ -229,6 +229,40 @@ fn bulk_command(method: &str, verb: &str) {
 
 // -- Config commands --
 
+pub fn config_path() {
+    println!("{}", crate::config::config_path().display());
+}
+
+pub fn config_edit() {
+    let path = crate::config::config_path();
+
+    // Create sample config if missing so the editor has something to show
+    if !path.exists() {
+        crate::config::sample::ensure_config_exists();
+    }
+
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+
+    let status = Command::new(&editor)
+        .arg(&path)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            eprintln!("editor exited with {s}");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("failed to launch editor '{editor}': {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 pub fn config_reload() {
     match send_rpc("config.reload", json!({})) {
         Ok(resp) => {
