@@ -45,6 +45,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: TunnelCommand,
     },
+    /// Manage config file
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// Manage the background daemon
     Daemon {
         #[command(subcommand)]
@@ -176,6 +181,12 @@ pub struct TunnelModifyArgs {
     /// Override keepalive setting
     #[arg(long)]
     pub keepalive: Option<bool>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Reload config file in the running daemon
+    Reload,
 }
 
 #[derive(Debug, Subcommand)]

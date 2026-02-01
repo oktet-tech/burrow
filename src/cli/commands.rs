@@ -227,6 +227,55 @@ fn bulk_command(method: &str, verb: &str) {
     }
 }
 
+// -- Config commands --
+
+pub fn config_reload() {
+    match send_rpc("config.reload", json!({})) {
+        Ok(resp) => {
+            if let Some(err) = resp.error {
+                eprintln!("error: {}", err.message);
+                std::process::exit(1);
+            }
+            if let Some(result) = resp.result {
+                let added = result["added"].as_array().map_or(0, |a| a.len());
+                let removed = result["removed"].as_array().map_or(0, |a| a.len());
+                let updated = result["updated"].as_array().map_or(0, |a| a.len());
+                let errors = result["errors"].as_array().map_or(0, |a| a.len());
+
+                if added == 0 && removed == 0 && updated == 0 {
+                    println!("config reloaded, no changes");
+                } else {
+                    let mut parts = Vec::new();
+                    if added > 0 {
+                        parts.push(format!("{added} added"));
+                    }
+                    if removed > 0 {
+                        parts.push(format!("{removed} removed"));
+                    }
+                    if updated > 0 {
+                        parts.push(format!("{updated} updated"));
+                    }
+                    println!("config reloaded: {}", parts.join(", "));
+                }
+
+                if errors > 0 {
+                    if let Some(errs) = result["errors"].as_array() {
+                        for e in errs {
+                            if let Some(s) = e.as_str() {
+                                eprintln!("  - {s}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            eprintln!("daemon is not running");
+            std::process::exit(1);
+        }
+    }
+}
+
 // -- Status command --
 
 pub fn status() {
