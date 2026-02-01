@@ -179,8 +179,8 @@ async fn handle_request(
         }
         Request::ConfigReload => match crate::config::load_config() {
             Ok(cfg) => {
-                mgr.reload_config(&cfg).await;
-                RpcResponse::success(id, json!({ "status": "reloaded" }))
+                let result = mgr.reload_config(&cfg).await;
+                RpcResponse::success(id, result)
             }
             Err(crate::config::ConfigError::NotFound(_)) => {
                 RpcResponse::error(id, protocol::CONFIG_ERROR, "config file not found")

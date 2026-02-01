@@ -53,6 +53,16 @@ impl Tunnel {
         &self.config
     }
 
+    /// Replace tunnel config and re-derive ssh_binary/keepalive.
+    pub fn update_config(&mut self, config: TunnelConfig, defaults: &Defaults) {
+        self.ssh_binary = config
+            .ssh_binary
+            .clone()
+            .unwrap_or_else(|| defaults.ssh_binary.clone());
+        self.keepalive = config.keepalive.unwrap_or(defaults.keepalive);
+        self.config = config;
+    }
+
     /// Build SSH command-line arguments per DESIGN.md.
     ///
     /// Always includes: -N, -o ExitOnForwardFailure=yes

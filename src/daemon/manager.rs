@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::task::JoinHandle;
 
 use crate::config::schema::{Config, TunnelMode};
-use crate::ipc::protocol::{BulkResult, TunnelInfo, TunnelStatus};
+use crate::ipc::protocol::{BulkResult, ReloadResult, TunnelInfo, TunnelStatus};
 
 use super::state::{self, PersistedTunnel, PersistedTunnelStats, State};
 use super::tunnel::{read_stderr, Tunnel};
@@ -308,16 +308,73 @@ impl TunnelManager {
         self.inner.lock().await.tunnels.len()
     }
 
-    /// Reload tunnels from a new config. Adds new tunnels, removes
-    /// disconnected tunnels no longer in config, warns about connected
-    /// tunnels removed from config (left until disconnected).
-    pub async fn reload_config(&self, config: &Config) {
-        let mut state = self.inner.lock().await;
+    /// Reload tunnels from a new config.
+    /// - Add new tunnels (don't auto-connect)
+    /// - Remove tunnels no longer in config (disconnect first if active)
+    /// - Update existing tunnels whose config changed (reconnect if was connected)
+    pub async fn reload_config(&self, config: &Config) -> ReloadResult {
+        // Phase 1: collect what to add, remove, update while holding the lock
+        let (to_add, to_remove, to_update, reconnect_ids) = {
+            let state = self.inner.lock().await;
 
-        // Add tunnels present in new config but not in manager
-        for (id, tunnel_config) in &config.tunnel {
-            if !state.tunnels.contains_key(id) {
-                let tunnel = Tunnel::new(id.clone(), tunnel_config.clone(), &config.defaults);
+            let mut to_add = Vec::new();
+            let mut to_update = Vec::new();
+            let mut reconnect_ids = Vec::new();
+
+            for (id, new_cfg) in &config.tunnel {
+                match state.tunnels.get(id) {
+                    None => to_add.push(id.clone()),
+                    Some(mt) => {
+                        if mt.tunnel.config() != new_cfg {
+                            let was_connected = mt.tunnel.status == TunnelStatus::Connected
+                                || mt.tunnel.status == TunnelStatus::Connecting;
+                            to_update.push(id.clone());
+                            if was_connected {
+                                reconnect_ids.push(id.clone());
+                            }
+                        }
+                    }
+                }
+            }
+
+            let to_remove: Vec<String> = state
+                .tunnels
+                .keys()
+                .filter(|id| !config.tunnel.contains_key(*id))
+                .cloned()
+                .collect();
+
+            (to_add, to_remove, to_update, reconnect_ids)
+        };
+
+        let mut result = ReloadResult {
+            added: Vec::new(),
+            removed: Vec::new(),
+            updated: Vec::new(),
+            errors: Vec::new(),
+        };
+
+        // Phase 2: disconnect tunnels that will be removed or reconnected
+        for id in &to_remove {
+            if let Err(e) = self.disconnect(id).await {
+                // May already be disconnected, that's fine
+                tracing::debug!(tunnel_id = %id, error = %e, "disconnect before remove");
+            }
+        }
+        for id in &reconnect_ids {
+            if let Err(e) = self.disconnect(id).await {
+                tracing::debug!(tunnel_id = %id, error = %e, "disconnect before update");
+            }
+        }
+
+        // Phase 3: mutate under lock
+        {
+            let mut state = self.inner.lock().await;
+
+            for id in &to_add {
+                let tunnel_config = &config.tunnel[id];
+                let tunnel =
+                    Tunnel::new(id.clone(), tunnel_config.clone(), &config.defaults);
                 state.tunnels.insert(
                     id.clone(),
                     ManagedTunnel {
@@ -327,35 +384,45 @@ impl TunnelManager {
                         consecutive_failures: 0,
                     },
                 );
-                tracing::info!(tunnel_id = %id, "added tunnel from config reload");
+                result.added.push(id.clone());
+                tracing::info!(tunnel_id = %id, "added tunnel");
+            }
+
+            for id in &to_remove {
+                state.tunnels.remove(id);
+                result.removed.push(id.clone());
+                tracing::info!(tunnel_id = %id, "removed tunnel");
+            }
+
+            for id in &to_update {
+                if let Some(mt) = state.tunnels.get_mut(id) {
+                    let new_cfg = config.tunnel[id].clone();
+                    mt.tunnel.update_config(new_cfg, &config.defaults);
+                    mt.consecutive_failures = 0;
+                    result.updated.push(id.clone());
+                    tracing::info!(tunnel_id = %id, "updated tunnel config");
+                }
+            }
+
+            state.state_dirty.notify_one();
+        }
+
+        // Phase 4: reconnect tunnels that were connected before the update
+        for id in &reconnect_ids {
+            if let Err(e) = self.connect(id).await {
+                let msg = format!("{id}: reconnect failed: {e}");
+                tracing::warn!(tunnel_id = %id, error = %e, "reconnect after config update failed");
+                result.errors.push(msg);
             }
         }
 
-        // Remove tunnels absent from new config (only if disconnected)
-        let to_remove: Vec<String> = state
-            .tunnels
-            .iter()
-            .filter(|(id, _)| !config.tunnel.contains_key(*id))
-            .map(|(id, _)| id.clone())
-            .collect();
-
-        for id in to_remove {
-            let mt = state.tunnels.get(&id).unwrap();
-            let is_active = mt.tunnel.status == TunnelStatus::Connected
-                || mt.tunnel.status == TunnelStatus::Connecting;
-            if is_active {
-                tracing::warn!(
-                    tunnel_id = %id,
-                    "tunnel removed from config but still connected, keeping until disconnected"
-                );
-            } else {
-                state.tunnels.remove(&id);
-                tracing::info!(tunnel_id = %id, "removed tunnel (no longer in config)");
-            }
-        }
-
-        state.state_dirty.notify_one();
-        tracing::info!(count = state.tunnels.len(), "config reload complete");
+        tracing::info!(
+            added = result.added.len(),
+            removed = result.removed.len(),
+            updated = result.updated.len(),
+            "config reload complete"
+        );
+        result
     }
 
     /// Merge persisted state into loaded tunnels. Config defines what tunnels

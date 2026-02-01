@@ -94,7 +94,7 @@ impl fmt::Display for TunnelMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TunnelConfig {
     /// Human-readable name (required).
     pub name: String,

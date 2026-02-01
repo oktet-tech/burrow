@@ -138,6 +138,15 @@ pub struct BulkResult {
     pub errors: Vec<String>,
 }
 
+/// Result of a config reload operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReloadResult {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    pub updated: Vec<String>,
+    pub errors: Vec<String>,
+}
+
 // -- Typed request enum --
 
 /// Parsed request ready for the daemon to dispatch.
