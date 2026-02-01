@@ -130,6 +130,14 @@ pub struct DaemonInfo {
     pub started_at: String,
 }
 
+/// Result of a bulk operation (connect-all, disconnect-all, restart-all).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkResult {
+    pub succeeded: u32,
+    pub failed: u32,
+    pub errors: Vec<String>,
+}
+
 // -- Typed request enum --
 
 /// Parsed request ready for the daemon to dispatch.
@@ -141,6 +149,9 @@ pub enum Request {
     TunnelDisconnect { id: String },
     TunnelEnable { id: String },
     TunnelDisable { id: String },
+    TunnelConnectAll,
+    TunnelDisconnectAll,
+    TunnelRestartAll,
     DaemonStatus,
     DaemonShutdown,
     ConfigReload,
@@ -179,6 +190,9 @@ impl Request {
             "tunnel.disable" => Ok(Self::TunnelDisable {
                 id: parse_tunnel_id(&req.params)?,
             }),
+            "tunnel.connect_all" => Ok(Self::TunnelConnectAll),
+            "tunnel.disconnect_all" => Ok(Self::TunnelDisconnectAll),
+            "tunnel.restart_all" => Ok(Self::TunnelRestartAll),
             "daemon.status" => Ok(Self::DaemonStatus),
             "daemon.shutdown" => Ok(Self::DaemonShutdown),
             "config.reload" => Ok(Self::ConfigReload),

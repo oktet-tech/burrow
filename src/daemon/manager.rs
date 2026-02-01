@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::task::JoinHandle;
 
 use crate::config::schema::{Config, TunnelMode};
-use crate::ipc::protocol::{TunnelInfo, TunnelStatus};
+use crate::ipc::protocol::{BulkResult, TunnelInfo, TunnelStatus};
 
 use super::state::{self, PersistedTunnel, PersistedTunnelStats, State};
 use super::tunnel::{read_stderr, Tunnel};
@@ -217,6 +217,73 @@ impl TunnelManager {
             .get(id)
             .map(|mt| mt.tunnel.config().mode == TunnelMode::Auto)
             .unwrap_or(false)
+    }
+
+    /// Connect all enabled tunnels (auto and manual modes).
+    pub async fn connect_all(&self) -> BulkResult {
+        let ids: Vec<String> = {
+            let inner = self.inner.lock().await;
+            inner
+                .tunnels
+                .iter()
+                .filter(|(_, mt)| {
+                    mt.tunnel.enabled
+                        && mt.tunnel.status != TunnelStatus::Connected
+                        && mt.tunnel.status != TunnelStatus::Connecting
+                })
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+
+        let mut succeeded = 0u32;
+        let mut errors = Vec::new();
+        for id in &ids {
+            match self.connect(id).await {
+                Ok(()) => succeeded += 1,
+                Err(e) => errors.push(format!("{id}: {e}")),
+            }
+        }
+        BulkResult {
+            succeeded,
+            failed: errors.len() as u32,
+            errors,
+        }
+    }
+
+    /// Disconnect all currently connected/connecting tunnels.
+    pub async fn disconnect_all(&self) -> BulkResult {
+        let ids: Vec<String> = {
+            let inner = self.inner.lock().await;
+            inner
+                .tunnels
+                .iter()
+                .filter(|(_, mt)| {
+                    mt.tunnel.status == TunnelStatus::Connected
+                        || mt.tunnel.status == TunnelStatus::Connecting
+                })
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+
+        let mut succeeded = 0u32;
+        let mut errors = Vec::new();
+        for id in &ids {
+            match self.disconnect(id).await {
+                Ok(()) => succeeded += 1,
+                Err(e) => errors.push(format!("{id}: {e}")),
+            }
+        }
+        BulkResult {
+            succeeded,
+            failed: errors.len() as u32,
+            errors,
+        }
+    }
+
+    /// Disconnect all, then connect all enabled tunnels.
+    pub async fn restart_all(&self) -> BulkResult {
+        self.disconnect_all().await;
+        self.connect_all().await
     }
 
     /// Snapshot of all tunnels for IPC responses.
