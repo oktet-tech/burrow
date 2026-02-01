@@ -93,7 +93,7 @@ directories = "5"
 - [x] `tunnel add/remove/modify` CLI commands
 - [x] Config reload without restart
 - [x] `enable/disable` commands
-- [ ] `connect-all`, `disconnect-all`, `restart-all`
+- [x] `connect-all`, `disconnect-all`, `restart-all`
 
 ### Phase 3: Robustness
 - [ ] Network change detection (macOS: SCNetworkReachability)
