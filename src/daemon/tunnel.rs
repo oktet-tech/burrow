@@ -4,7 +4,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use crate::config::schema::{Defaults, TunnelConfig, TunnelType};
-use crate::ipc::protocol::TunnelStatus;
+use crate::ipc::protocol::{TunnelInfo, TunnelStatus};
 
 pub struct Tunnel {
     pub id: String,
@@ -101,9 +101,9 @@ impl Tunnel {
         args
     }
 
-    /// Spawn SSH process, wait for it to exit, update status.
-    /// Returns after the process exits (or fails to start).
-    pub async fn spawn(&mut self) {
+    /// Start the SSH process and return the Child handle for external monitoring.
+    /// Sets status to Connected. Caller is responsible for watching the child.
+    pub fn start(&mut self) -> Result<tokio::process::Child, std::io::Error> {
         self.status = TunnelStatus::Connecting;
         self.last_error = None;
 
@@ -116,7 +116,7 @@ impl Tunnel {
             args.join(" ")
         );
 
-        let mut child = match Command::new(&self.ssh_binary)
+        let child = match Command::new(&self.ssh_binary)
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -124,6 +124,76 @@ impl Tunnel {
             .kill_on_drop(true)
             .spawn()
         {
+            Ok(child) => child,
+            Err(e) => {
+                self.status = TunnelStatus::Error;
+                self.last_error = Some(format!("failed to spawn SSH: {e}"));
+                return Err(e);
+            }
+        };
+
+        self.pid = child.id();
+        self.status = TunnelStatus::Connected;
+        tracing::info!(tunnel_id = %self.id, pid = ?self.pid, "SSH process started");
+
+        Ok(child)
+    }
+
+    /// Record that the SSH process exited. Any exit is unexpected for -N tunnels.
+    pub fn record_exit(&mut self, code: Option<i32>, stderr: Option<String>) {
+        self.pid = None;
+        self.status = TunnelStatus::Error;
+        self.last_error = Some(match (code, &stderr) {
+            (Some(c), Some(msg)) => format!("exited with code {c}: {msg}"),
+            (Some(c), None) => format!("exited with code {c}"),
+            (None, Some(msg)) => format!("killed by signal: {msg}"),
+            (None, None) => "killed by signal".into(),
+        });
+        tracing::warn!(tunnel_id = %self.id, error = ?self.last_error, "SSH process exited");
+    }
+
+    /// Mark as disconnected (user-initiated stop).
+    pub fn record_disconnect(&mut self) {
+        self.pid = None;
+        self.status = TunnelStatus::Disconnected;
+        self.last_error = None;
+    }
+
+    /// Build a TunnelInfo snapshot for IPC responses.
+    pub fn to_info(&self) -> TunnelInfo {
+        let remote = match self.config.tunnel_type {
+            TunnelType::Local => {
+                let rh = self.config.remote_host.as_deref().unwrap_or("localhost");
+                let rp = self.config.remote_port.unwrap_or(0);
+                Some(format!("{rh}:{rp}"))
+            }
+            TunnelType::Reverse => {
+                let rb = self.config.remote_bind.as_deref().unwrap_or("localhost");
+                let rp = self.config.remote_port.unwrap_or(0);
+                Some(format!("{rb}:{rp}"))
+            }
+            TunnelType::Socks => Some("SOCKS5".into()),
+        };
+
+        TunnelInfo {
+            id: self.id.clone(),
+            name: self.config.name.clone(),
+            tunnel_type: self.config.tunnel_type.to_string(),
+            mode: self.config.mode.to_string(),
+            status: self.status,
+            local_port: self.config.local_port,
+            remote,
+            host: self.config.host.clone(),
+            enabled: true,
+            last_error: self.last_error.clone(),
+            stats: None,
+        }
+    }
+
+    /// Spawn SSH process, wait for it to exit, update status.
+    /// Convenience method for standalone use; the manager uses start() + monitor instead.
+    pub async fn spawn(&mut self) {
+        let mut child = match self.start() {
             Ok(c) => c,
             Err(e) => {
                 self.status = TunnelStatus::Error;
@@ -133,44 +203,21 @@ impl Tunnel {
             }
         };
 
-        self.pid = child.id();
-        self.status = TunnelStatus::Connected;
-        tracing::info!(tunnel_id = %self.id, pid = ?self.pid, "SSH process started");
-
-        // Grab stderr handle before waiting so we can read it after exit
         let stderr_handle = child.stderr.take();
         let wait_result = child.wait().await;
         let stderr_msg = read_stderr(stderr_handle).await;
 
-        self.pid = None;
-
         match wait_result {
-            Ok(status) => {
-                let code = status.code();
-                // Any exit (including 0) is unexpected for -N tunnels
-                self.status = TunnelStatus::Error;
-                self.last_error = Some(match (code, &stderr_msg) {
-                    (Some(c), Some(msg)) => format!("exited with code {c}: {msg}"),
-                    (Some(c), None) => format!("exited with code {c}"),
-                    (None, Some(msg)) => format!("killed by signal: {msg}"),
-                    (None, None) => "killed by signal".into(),
-                });
-            }
+            Ok(status) => self.record_exit(status.code(), stderr_msg),
             Err(e) => {
                 self.status = TunnelStatus::Error;
                 self.last_error = Some(format!("wait failed: {e}"));
             }
         }
-
-        tracing::warn!(
-            tunnel_id = %self.id,
-            error = ?self.last_error,
-            "SSH process exited"
-        );
     }
 }
 
-async fn read_stderr(handle: Option<tokio::process::ChildStderr>) -> Option<String> {
+pub(super) async fn read_stderr(handle: Option<tokio::process::ChildStderr>) -> Option<String> {
     let mut stderr = handle?;
     let mut buf = String::new();
     // Process has already exited, so this reads buffered output then hits EOF

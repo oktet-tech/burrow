@@ -1,7 +1,10 @@
+pub mod manager;
 pub mod server;
 pub mod tunnel;
 
 use std::path::{Path, PathBuf};
+
+use crate::config;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
@@ -65,9 +68,21 @@ pub async fn run() -> Result<(), DaemonError> {
         std::fs::create_dir_all(parent)?;
     }
 
+    // Load config -- missing config is fine, we just start with zero tunnels
+    let mgr = manager::TunnelManager::new();
+    match config::load_config() {
+        Ok(cfg) => mgr.load_tunnels(&cfg).await,
+        Err(config::ConfigError::NotFound(_)) => {
+            tracing::info!("no config file found, starting with no tunnels");
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load config");
+        }
+    }
+
     tracing::info!("starting daemon, socket: {}", path.display());
 
-    let result = server::run(&path).await;
+    let result = server::run(&path, mgr).await;
 
     // Always clean up socket on exit
     if path.exists() {

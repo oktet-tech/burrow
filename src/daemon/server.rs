@@ -8,10 +8,11 @@ use tokio::sync::watch;
 
 use crate::ipc::protocol::{self, DaemonInfo, Request, RpcRequest, RpcResponse};
 
+use super::manager::TunnelManager;
 use super::DaemonError;
 
 /// Bind the IPC socket and serve requests until daemon.shutdown.
-pub async fn run(socket_path: &Path) -> Result<(), DaemonError> {
+pub async fn run(socket_path: &Path, mgr: TunnelManager) -> Result<(), DaemonError> {
     let listener = UnixListener::bind(socket_path)?;
 
     #[cfg(unix)]
@@ -36,9 +37,10 @@ pub async fn run(socket_path: &Path) -> Result<(), DaemonError> {
                 match result {
                     Ok((stream, _addr)) => {
                         let shutdown_tx = shutdown_tx.clone();
+                        let mgr = mgr.clone();
                         tokio::spawn(async move {
                             if let Err(e) = handle_connection(
-                                stream, started, started_epoch, shutdown_tx,
+                                stream, started, started_epoch, shutdown_tx, mgr,
                             ).await {
                                 tracing::error!(error = %e, "connection handler failed");
                             }
@@ -66,6 +68,7 @@ async fn handle_connection(
     started: Instant,
     started_epoch: u64,
     shutdown_tx: watch::Sender<bool>,
+    mgr: TunnelManager,
 ) -> Result<(), std::io::Error> {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -79,7 +82,8 @@ async fn handle_connection(
             Ok(rpc_req) => match Request::from_rpc(&rpc_req) {
                 Ok(request) => {
                     let is_shutdown = matches!(request, Request::DaemonShutdown);
-                    let resp = handle_request(rpc_req.id, request, started, started_epoch);
+                    let resp =
+                        handle_request(rpc_req.id, request, started, started_epoch, &mgr).await;
 
                     if is_shutdown {
                         write_response(&mut writer, &resp).await?;
@@ -109,38 +113,48 @@ async fn handle_connection(
     Ok(())
 }
 
-/// Dummy handlers -- return empty/stub data until tunnel management is wired up.
-fn handle_request(
+async fn handle_request(
     id: u64,
     request: Request,
     started: Instant,
     started_epoch: u64,
+    mgr: &TunnelManager,
 ) -> RpcResponse {
     match request {
-        Request::TunnelList => RpcResponse::success(id, json!({ "tunnels": [] })),
-        Request::TunnelGet { id: tid } => {
-            RpcResponse::error(id, protocol::TUNNEL_NOT_FOUND, format!("tunnel '{tid}' not found"))
+        Request::TunnelList => {
+            let tunnels = mgr.list().await;
+            RpcResponse::success(id, json!({ "tunnels": tunnels }))
         }
-        Request::TunnelConnect { id: tid } => {
-            RpcResponse::error(id, protocol::TUNNEL_NOT_FOUND, format!("tunnel '{tid}' not found"))
-        }
-        Request::TunnelDisconnect { id: tid } => {
-            RpcResponse::error(id, protocol::TUNNEL_NOT_FOUND, format!("tunnel '{tid}' not found"))
-        }
+        Request::TunnelGet { id: tid } => match mgr.get(&tid).await {
+            Some(info) => RpcResponse::success(id, info),
+            None => RpcResponse::error(
+                id,
+                protocol::TUNNEL_NOT_FOUND,
+                format!("tunnel '{tid}' not found"),
+            ),
+        },
+        Request::TunnelConnect { id: tid } => match mgr.connect(&tid).await {
+            Ok(()) => RpcResponse::success(id, json!({ "status": "connected" })),
+            Err(msg) => RpcResponse::error(id, protocol::TUNNEL_NOT_FOUND, msg),
+        },
+        Request::TunnelDisconnect { id: tid } => match mgr.disconnect(&tid).await {
+            Ok(()) => RpcResponse::success(id, json!({ "status": "disconnected" })),
+            Err(msg) => RpcResponse::error(id, protocol::TUNNEL_NOT_FOUND, msg),
+        },
         Request::DaemonStatus => {
             let uptime = started.elapsed().as_secs();
+            let tunnel_count = mgr.tunnel_count().await;
             RpcResponse::success(
                 id,
                 DaemonInfo {
                     version: env!("CARGO_PKG_VERSION").to_string(),
                     uptime_seconds: uptime,
-                    tunnel_count: 0,
+                    tunnel_count,
                     started_at: started_epoch.to_string(),
                 },
             )
         }
         Request::DaemonShutdown => {
-            // Response is sent before shutdown signal in handle_connection
             RpcResponse::success(id, json!({ "status": "shutting_down" }))
         }
     }
