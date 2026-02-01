@@ -90,7 +90,7 @@ directories = "5"
 
 **Skip:** GUI, on-demand mode, network detection, reconnection, notifications
 
-### Phase 2: Tunnel Lifecycle ← CURRENT
+### Phase 2: Tunnel Lifecycle (done)
 - [x] All tunnel types (local, reverse, socks)
 - [x] Reconnection with exponential backoff
 - [x] State persistence (state.json)
@@ -99,10 +99,10 @@ directories = "5"
 - [x] `enable/disable` commands
 - [x] `connect-all`, `disconnect-all`, `restart-all`
 
-### Phase 3: Robustness
+### Phase 3: Robustness ← CURRENT
 - [ ] Network change detection (macOS: SCNetworkReachability)
 - [ ] On-demand stub listeners
-- [ ] Port conflict detection and handling
+- [x] Port conflict detection and handling
 - [ ] Log rotation
 - [ ] First-run sample config generation
 - [ ] `burrow service install/uninstall`
