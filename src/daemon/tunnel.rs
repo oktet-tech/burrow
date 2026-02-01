@@ -1,3 +1,4 @@
+use std::net::TcpListener;
 use std::process::Stdio;
 use std::time::Instant;
 
@@ -20,6 +21,8 @@ pub struct Tunnel {
     pub total_connections: u64,
     pub total_uptime_seconds: u64,
     pub reconnect_count: u64,
+    /// Set when the local port is already in use. Suppresses auto-reconnect.
+    pub port_conflict: bool,
     /// Monotonic clock reference for calculating session uptime.
     session_start: Option<Instant>,
 }
@@ -45,6 +48,7 @@ impl Tunnel {
             total_connections: 0,
             total_uptime_seconds: 0,
             reconnect_count: 0,
+            port_conflict: false,
             session_start: None,
         }
     }
@@ -130,6 +134,21 @@ impl Tunnel {
     pub fn start(&mut self) -> Result<tokio::process::Child, std::io::Error> {
         self.status = TunnelStatus::Connecting;
         self.last_error = None;
+        self.port_conflict = false;
+
+        // Pre-spawn port check for tunnel types that bind locally
+        if matches!(self.config.tunnel_type, TunnelType::Local | TunnelType::Socks) {
+            if let Err(e) = TcpListener::bind(("127.0.0.1", self.config.local_port)) {
+                if e.kind() == std::io::ErrorKind::AddrInUse {
+                    self.port_conflict = true;
+                    self.status = TunnelStatus::Error;
+                    let msg = format!("port {} already in use", self.config.local_port);
+                    self.last_error = Some(msg.clone());
+                    tracing::warn!(tunnel_id = %self.id, port = self.config.local_port, "{msg}");
+                    return Err(e);
+                }
+            }
+        }
 
         let args = self.build_ssh_args();
 
@@ -167,12 +186,28 @@ impl Tunnel {
     }
 
     /// Record that the SSH process exited. Any exit is unexpected for -N tunnels.
+    /// Detects port conflict from SSH stderr (ExitOnForwardFailure).
     pub fn record_exit(&mut self, code: Option<i32>, stderr: Option<String>) {
         self.pid = None;
         self.status = TunnelStatus::Error;
         if let Some(start) = self.session_start.take() {
             self.total_uptime_seconds += start.elapsed().as_secs();
         }
+
+        // Detect port conflict from SSH stderr
+        if let Some(ref msg) = stderr {
+            if msg.contains("Address already in use") {
+                self.port_conflict = true;
+                self.last_error = Some(format!("port {} already in use", self.config.local_port));
+                tracing::warn!(
+                    tunnel_id = %self.id,
+                    port = self.config.local_port,
+                    "port conflict detected from SSH stderr"
+                );
+                return;
+            }
+        }
+
         self.last_error = Some(match (code, &stderr) {
             (Some(c), Some(msg)) => format!("exited with code {c}: {msg}"),
             (Some(c), None) => format!("exited with code {c}"),
@@ -183,8 +218,12 @@ impl Tunnel {
     }
 
     /// Whether this tunnel should auto-reconnect after an unexpected exit.
+    /// Port conflicts require user intervention, so reconnection is suppressed.
     pub fn should_reconnect(&self) -> bool {
-        self.enabled && self.config.mode == TunnelMode::Auto && self.status == TunnelStatus::Error
+        self.enabled
+            && !self.port_conflict
+            && self.config.mode == TunnelMode::Auto
+            && self.status == TunnelStatus::Error
     }
 
     /// Mark as disconnected (user-initiated stop).
@@ -299,7 +338,7 @@ mod tests {
             port: 22,
             tunnel_type: TunnelType::Local,
             mode: TunnelMode::Auto,
-            local_port: 5432,
+            local_port: 59432,
             remote_host: Some("db.internal".into()),
             remote_port: Some(5432),
             local_host: None,
@@ -321,7 +360,7 @@ mod tests {
         assert!(args.contains(&"ExitOnForwardFailure=yes".to_string()));
         assert!(args.contains(&"ServerAliveInterval=30".to_string()));
         assert!(args.contains(&"-L".to_string()));
-        assert!(args.contains(&"127.0.0.1:5432:db.internal:5432".to_string()));
+        assert!(args.contains(&"127.0.0.1:59432:db.internal:5432".to_string()));
         assert!(args.contains(&"-i".to_string()));
         assert!(args.contains(&"/home/user/.ssh/work_key".to_string()));
         assert!(args.contains(&"-J".to_string()));
@@ -448,7 +487,7 @@ mod tests {
         let info = t.to_info();
         assert_eq!(info.tunnel_type, "local");
         assert_eq!(info.remote.as_deref(), Some("db.internal:5432"));
-        assert_eq!(info.local_port, 5432);
+        assert_eq!(info.local_port, 59432);
     }
 
     #[test]
@@ -533,5 +572,75 @@ mod tests {
         assert_eq!(t.status, TunnelStatus::Error);
         assert!(t.last_error.as_ref().unwrap().contains("exited with code 1"));
         assert!(t.pid.is_none());
+    }
+
+    #[test]
+    fn port_conflict_suppresses_reconnect() {
+        let mut t = Tunnel::new("t".into(), local_config(), &defaults());
+        t.status = TunnelStatus::Error;
+        t.port_conflict = true;
+        assert!(!t.should_reconnect());
+    }
+
+    #[tokio::test]
+    async fn port_conflict_cleared_on_start_attempt() {
+        let mut t = Tunnel::new("t".into(), local_config(), &defaults());
+        t.port_conflict = true;
+        // start() will fail (no real SSH), but port_conflict should be cleared
+        let _ = t.start();
+        assert!(!t.port_conflict);
+    }
+
+    #[test]
+    fn record_exit_detects_port_conflict_from_stderr() {
+        let mut t = Tunnel::new("t".into(), local_config(), &defaults());
+        t.status = TunnelStatus::Connected;
+
+        t.record_exit(
+            Some(255),
+            Some("bind: Address already in use".into()),
+        );
+
+        assert!(t.port_conflict);
+        assert_eq!(t.status, TunnelStatus::Error);
+        assert!(t.last_error.as_ref().unwrap().contains("already in use"));
+        assert!(!t.should_reconnect());
+    }
+
+    #[test]
+    fn record_exit_no_port_conflict_for_other_errors() {
+        let mut t = Tunnel::new("t".into(), local_config(), &defaults());
+        t.status = TunnelStatus::Connected;
+
+        t.record_exit(Some(1), Some("Connection refused".into()));
+
+        assert!(!t.port_conflict);
+    }
+
+    #[test]
+    fn reverse_tunnel_skips_port_check() {
+        // Reverse tunnels don't bind locally, so port check is not applicable
+        let config = TunnelConfig {
+            name: "Rev".into(),
+            host: "h.example.com".into(),
+            port: 22,
+            tunnel_type: TunnelType::Reverse,
+            mode: TunnelMode::Auto,
+            local_port: 3000,
+            remote_host: None,
+            remote_port: Some(4000),
+            local_host: None,
+            remote_bind: None,
+            identity: None,
+            jump_host: None,
+            jump_port: None,
+            ssh_binary: Some("/nonexistent/ssh".into()),
+            keepalive: None,
+        };
+        let mut t = Tunnel::new("rev".into(), config, &defaults());
+        // start() will fail because binary doesn't exist, but it should NOT
+        // fail with port_conflict even if port 3000 were in use
+        let _ = t.start();
+        assert!(!t.port_conflict);
     }
 }

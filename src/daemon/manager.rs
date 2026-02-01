@@ -634,7 +634,7 @@ mod tests {
                 port: 22,
                 tunnel_type: TunnelType::Local,
                 mode: TunnelMode::Auto,
-                local_port: 5432,
+                local_port: 59432,
                 remote_host: Some("db.internal".into()),
                 remote_port: Some(5432),
                 local_host: None,
@@ -654,7 +654,7 @@ mod tests {
                 port: 22,
                 tunnel_type: TunnelType::Socks,
                 mode: TunnelMode::OnDemand,
-                local_port: 1080,
+                local_port: 59080,
                 remote_host: None,
                 remote_port: None,
                 local_host: None,
@@ -682,7 +682,7 @@ mod tests {
                 port: 22,
                 tunnel_type: TunnelType::Local,
                 mode: TunnelMode::Manual,
-                local_port: 9999,
+                local_port: 59999,
                 remote_host: Some("localhost".into()),
                 remote_port: Some(22),
                 local_host: None,
@@ -749,11 +749,9 @@ mod tests {
     #[tokio::test]
     async fn connect_with_bad_binary_sets_error() {
         let mut config = test_config();
-        config
-            .tunnel
-            .get_mut("dev-db")
-            .unwrap()
-            .ssh_binary = Some("/nonexistent/ssh".into());
+        let tc = config.tunnel.get_mut("dev-db").unwrap();
+        tc.ssh_binary = Some("/nonexistent/ssh".into());
+        tc.local_port = 59001;
 
         let mgr = TunnelManager::new();
         mgr.load_tunnels(&config).await;
@@ -768,16 +766,10 @@ mod tests {
     #[tokio::test]
     async fn connect_then_disconnect() {
         let mut config = test_config();
-        config
-            .tunnel
-            .get_mut("dev-db")
-            .unwrap()
-            .ssh_binary = Some("sleep".into());
-        config
-            .tunnel
-            .get_mut("dev-db")
-            .unwrap()
-            .host = "60".into();
+        let tc = config.tunnel.get_mut("dev-db").unwrap();
+        tc.ssh_binary = Some("sleep".into());
+        tc.host = "60".into();
+        tc.local_port = 59002;
 
         let mgr = TunnelManager::new();
         mgr.load_tunnels(&config).await;
@@ -794,17 +786,10 @@ mod tests {
     #[tokio::test]
     async fn exit_detection() {
         let mut config = test_config();
-        // Use manual mode so the exit handler doesn't schedule a reconnect
-        config
-            .tunnel
-            .get_mut("dev-db")
-            .unwrap()
-            .mode = TunnelMode::Manual;
-        config
-            .tunnel
-            .get_mut("dev-db")
-            .unwrap()
-            .ssh_binary = Some("false".into());
+        let tc = config.tunnel.get_mut("dev-db").unwrap();
+        tc.mode = TunnelMode::Manual;
+        tc.ssh_binary = Some("false".into());
+        tc.local_port = 59003;
 
         let mgr = TunnelManager::new();
         mgr.load_tunnels(&config).await;
@@ -837,7 +822,9 @@ mod tests {
 
     #[tokio::test]
     async fn manual_tunnel_does_not_reconnect() {
-        let config = manual_config("false");
+        let mut config = manual_config("false");
+        config.tunnel.get_mut("manual-tun").unwrap().local_port = 59004;
+
         let mgr = TunnelManager::new();
         mgr.load_tunnels(&config).await;
 
@@ -854,12 +841,9 @@ mod tests {
     #[tokio::test]
     async fn auto_tunnel_schedules_reconnect() {
         let mut config = test_config();
-        // `false` exits immediately -- auto mode should schedule reconnect
-        config
-            .tunnel
-            .get_mut("dev-db")
-            .unwrap()
-            .ssh_binary = Some("false".into());
+        let tc = config.tunnel.get_mut("dev-db").unwrap();
+        tc.ssh_binary = Some("false".into());
+        tc.local_port = 59005;
 
         let mgr = TunnelManager::new();
         mgr.load_tunnels(&config).await;
@@ -882,11 +866,9 @@ mod tests {
     #[tokio::test]
     async fn disconnect_cancels_pending_reconnect() {
         let mut config = test_config();
-        config
-            .tunnel
-            .get_mut("dev-db")
-            .unwrap()
-            .ssh_binary = Some("false".into());
+        let tc = config.tunnel.get_mut("dev-db").unwrap();
+        tc.ssh_binary = Some("false".into());
+        tc.local_port = 59006;
 
         let mgr = TunnelManager::new();
         mgr.load_tunnels(&config).await;
@@ -914,16 +896,10 @@ mod tests {
     #[tokio::test]
     async fn connect_resets_backoff() {
         let mut config = test_config();
-        config
-            .tunnel
-            .get_mut("dev-db")
-            .unwrap()
-            .ssh_binary = Some("sleep".into());
-        config
-            .tunnel
-            .get_mut("dev-db")
-            .unwrap()
-            .host = "60".into();
+        let tc = config.tunnel.get_mut("dev-db").unwrap();
+        tc.ssh_binary = Some("sleep".into());
+        tc.host = "60".into();
+        tc.local_port = 59007;
 
         let mgr = TunnelManager::new();
         mgr.load_tunnels(&config).await;
