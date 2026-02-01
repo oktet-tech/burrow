@@ -76,6 +76,10 @@ directories = "5"
 
 ## Development Phases
 
+- Make granular commits while doing developmen
+- Use semantic commits
+- Don't add co-authored or other trailers
+
 ### Phase 1: Foundation (done)
 - [x] Config module (schema.rs, validation.rs, loading)
 - [x] IPC protocol types (JSON-RPC request/response)
