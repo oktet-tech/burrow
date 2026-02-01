@@ -80,7 +80,7 @@ directories = "5"
 - [x] Config module (schema.rs, validation.rs, loading)
 - [x] IPC protocol types (JSON-RPC request/response)
 - [x] Basic daemon (start, IPC listener, shutdown)
-- [ ] CLI skeleton (clap, daemon start/stop/status)
+- [x] CLI skeleton (clap, daemon start/stop/status)
 - [ ] Single tunnel spawn (SSH process, exit detection)
 - [ ] Basic `burrow status` showing tunnel states
 
