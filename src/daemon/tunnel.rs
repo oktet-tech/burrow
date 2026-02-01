@@ -1,4 +1,5 @@
 use std::process::Stdio;
+use std::time::Instant;
 
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -14,7 +15,13 @@ pub struct Tunnel {
     pub status: TunnelStatus,
     pub last_error: Option<String>,
     pub pid: Option<u32>,
+    pub enabled: bool,
+    pub last_connected: Option<String>,
+    pub total_connections: u64,
+    pub total_uptime_seconds: u64,
     pub reconnect_count: u64,
+    /// Monotonic clock reference for calculating session uptime.
+    session_start: Option<Instant>,
 }
 
 impl Tunnel {
@@ -33,7 +40,12 @@ impl Tunnel {
             status: TunnelStatus::Disconnected,
             last_error: None,
             pid: None,
+            enabled: true,
+            last_connected: None,
+            total_connections: 0,
+            total_uptime_seconds: 0,
             reconnect_count: 0,
+            session_start: None,
         }
     }
 
@@ -136,6 +148,9 @@ impl Tunnel {
 
         self.pid = child.id();
         self.status = TunnelStatus::Connected;
+        self.total_connections += 1;
+        self.session_start = Some(Instant::now());
+        self.last_connected = Some(chrono::Utc::now().to_rfc3339());
         tracing::info!(tunnel_id = %self.id, pid = ?self.pid, "SSH process started");
 
         Ok(child)
@@ -145,6 +160,9 @@ impl Tunnel {
     pub fn record_exit(&mut self, code: Option<i32>, stderr: Option<String>) {
         self.pid = None;
         self.status = TunnelStatus::Error;
+        if let Some(start) = self.session_start.take() {
+            self.total_uptime_seconds += start.elapsed().as_secs();
+        }
         self.last_error = Some(match (code, &stderr) {
             (Some(c), Some(msg)) => format!("exited with code {c}: {msg}"),
             (Some(c), None) => format!("exited with code {c}"),
@@ -164,6 +182,14 @@ impl Tunnel {
         self.pid = None;
         self.status = TunnelStatus::Disconnected;
         self.last_error = None;
+        if let Some(start) = self.session_start.take() {
+            self.total_uptime_seconds += start.elapsed().as_secs();
+        }
+    }
+
+    /// Seconds elapsed in the current session, or 0 if not connected.
+    pub fn session_start_elapsed(&self) -> u64 {
+        self.session_start.map_or(0, |s| s.elapsed().as_secs())
     }
 
     /// Build a TunnelInfo snapshot for IPC responses.
@@ -191,9 +217,17 @@ impl Tunnel {
             local_port: self.config.local_port,
             remote,
             host: self.config.host.clone(),
-            enabled: true,
+            enabled: self.enabled,
             last_error: self.last_error.clone(),
             stats: Some(TunnelStats {
+                total_connections: self.total_connections,
+                current_session_start: if self.status == TunnelStatus::Connected {
+                    self.last_connected.clone()
+                } else {
+                    None
+                },
+                total_uptime_seconds: self.total_uptime_seconds
+                    + self.session_start_elapsed(),
                 reconnect_count: self.reconnect_count,
             }),
         }

@@ -1,5 +1,6 @@
 pub mod manager;
 pub mod server;
+pub mod state;
 pub mod tunnel;
 
 use std::path::{Path, PathBuf};
@@ -80,9 +81,23 @@ pub async fn run() -> Result<(), DaemonError> {
         }
     }
 
+    // Restore persisted state (enabled flags, accumulated stats)
+    let persisted = state::load_state();
+    mgr.apply_state(&persisted).await;
+
+    // Auto-save state on changes (debounced)
+    let state_file = state::state_path();
+    mgr.enable_state_persistence(state_file.clone());
+
+    // Connect tunnels with mode=auto and enabled=true
+    mgr.connect_auto_tunnels().await;
+
     tracing::info!("starting daemon, socket: {}", path.display());
 
-    let result = server::run(&path, mgr).await;
+    let result = server::run(&path, mgr.clone()).await;
+
+    // Final state save before exit
+    mgr.save_state_now(&state_file).await;
 
     // Always clean up socket on exit
     if path.exists() {

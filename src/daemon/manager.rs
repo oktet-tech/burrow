@@ -1,13 +1,15 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::task::JoinHandle;
 
-use crate::config::schema::Config;
+use crate::config::schema::{Config, TunnelMode};
 use crate::ipc::protocol::{TunnelInfo, TunnelStatus};
 
+use super::state::{self, PersistedTunnel, PersistedTunnelStats, State};
 use super::tunnel::{read_stderr, Tunnel};
 
 const MAX_BACKOFF_SECS: u64 = 300;
@@ -32,6 +34,8 @@ struct ExitEvent {
 struct Inner {
     tunnels: HashMap<String, ManagedTunnel>,
     exit_tx: mpsc::UnboundedSender<ExitEvent>,
+    state_dirty: Arc<Notify>,
+    daemon_started: String,
 }
 
 /// Manages all tunnel lifecycles. Cheaply cloneable (Arc wrapper).
@@ -88,9 +92,12 @@ fn start_tunnel(
 impl TunnelManager {
     pub fn new() -> Self {
         let (exit_tx, exit_rx) = mpsc::unbounded_channel();
+        let state_dirty = Arc::new(Notify::new());
         let inner = Arc::new(Mutex::new(Inner {
             tunnels: HashMap::new(),
             exit_tx,
+            state_dirty,
+            daemon_started: chrono::Utc::now().to_rfc3339(),
         }));
 
         Self::spawn_exit_handler(Arc::clone(&inner), exit_rx);
@@ -130,7 +137,9 @@ impl TunnelManager {
             handle.abort();
         }
 
-        start_tunnel(mt, &exit_tx)
+        let result = start_tunnel(mt, &exit_tx);
+        state.state_dirty.notify_one();
+        result
     }
 
     /// Kill the SSH process for a tunnel (user-initiated).
@@ -150,6 +159,7 @@ impl TunnelManager {
 
         mt.consecutive_failures = 0;
         mt.tunnel.record_disconnect();
+        state.state_dirty.notify_one();
         Ok(())
     }
 
@@ -175,6 +185,100 @@ impl TunnelManager {
         self.inner.lock().await.tunnels.len()
     }
 
+    /// Merge persisted state into loaded tunnels. Config defines what tunnels
+    /// exist; state restores enabled flag and accumulated stats.
+    pub async fn apply_state(&self, persisted: &State) {
+        let mut inner = self.inner.lock().await;
+        for (id, pt) in &persisted.tunnels {
+            if let Some(mt) = inner.tunnels.get_mut(id) {
+                mt.tunnel.enabled = pt.enabled;
+                mt.tunnel.last_connected = pt.last_connected.clone();
+                mt.tunnel.last_error = pt.last_error.clone();
+                mt.tunnel.total_connections = pt.stats.total_connections;
+                mt.tunnel.total_uptime_seconds = pt.stats.total_uptime_seconds;
+                mt.tunnel.reconnect_count = pt.stats.reconnect_count;
+            }
+        }
+        tracing::info!("applied persisted state");
+    }
+
+    /// Connect all tunnels with mode=auto and enabled=true.
+    pub async fn connect_auto_tunnels(&self) {
+        let ids: Vec<String> = {
+            let inner = self.inner.lock().await;
+            inner
+                .tunnels
+                .iter()
+                .filter(|(_, mt)| {
+                    mt.tunnel.enabled && mt.tunnel.config().mode == TunnelMode::Auto
+                })
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+
+        for id in &ids {
+            if let Err(e) = self.connect(id).await {
+                tracing::error!(tunnel_id = %id, error = %e, "failed to auto-connect");
+            }
+        }
+
+        if !ids.is_empty() {
+            tracing::info!(count = ids.len(), "auto-connected tunnels");
+        }
+    }
+
+    /// Spawn a background task that saves state to disk with 1s debounce.
+    pub fn enable_state_persistence(&self, path: PathBuf) {
+        let inner = Arc::clone(&self.inner);
+        tokio::spawn(async move {
+            let state_dirty = inner.lock().await.state_dirty.clone();
+            loop {
+                state_dirty.notified().await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+
+                let snapshot = Self::snapshot_state(&inner).await;
+                if let Err(e) = state::save_state_to(&path, &snapshot) {
+                    tracing::error!(error = %e, "failed to save state");
+                }
+            }
+        });
+    }
+
+    /// Save state synchronously (for daemon shutdown).
+    pub async fn save_state_now(&self, path: &std::path::Path) {
+        let snapshot = Self::snapshot_state(&self.inner).await;
+        if let Err(e) = state::save_state_to(path, &snapshot) {
+            tracing::error!(error = %e, "failed to save state on shutdown");
+        }
+    }
+
+    async fn snapshot_state(inner: &Arc<Mutex<Inner>>) -> State {
+        let guard = inner.lock().await;
+        let mut tunnels = HashMap::new();
+        for (id, mt) in &guard.tunnels {
+            let t = &mt.tunnel;
+            let uptime = t.total_uptime_seconds
+                + t.session_start_elapsed();
+            tunnels.insert(
+                id.clone(),
+                PersistedTunnel {
+                    enabled: t.enabled,
+                    last_connected: t.last_connected.clone(),
+                    last_error: t.last_error.clone(),
+                    stats: PersistedTunnelStats {
+                        total_connections: t.total_connections,
+                        total_uptime_seconds: uptime,
+                        reconnect_count: t.reconnect_count,
+                    },
+                },
+            );
+        }
+        State {
+            tunnels,
+            daemon_started: Some(guard.daemon_started.clone()),
+        }
+    }
+
     fn spawn_exit_handler(
         inner: Arc<Mutex<Inner>>,
         mut exit_rx: mpsc::UnboundedReceiver<ExitEvent>,
@@ -182,12 +286,14 @@ impl TunnelManager {
         tokio::spawn(async move {
             while let Some(event) = exit_rx.recv().await {
                 let mut state = inner.lock().await;
+                let state_dirty = state.state_dirty.clone();
                 let Some(mt) = state.tunnels.get_mut(&event.id) else {
                     continue;
                 };
 
                 mt.monitor = None;
                 mt.tunnel.record_exit(event.code, event.stderr);
+                state_dirty.notify_one();
 
                 if !mt.tunnel.should_reconnect() {
                     continue;
