@@ -157,6 +157,16 @@ async fn handle_request(
         Request::DaemonShutdown => {
             RpcResponse::success(id, json!({ "status": "shutting_down" }))
         }
+        Request::ConfigReload => match crate::config::load_config() {
+            Ok(cfg) => {
+                mgr.reload_config(&cfg).await;
+                RpcResponse::success(id, json!({ "status": "reloaded" }))
+            }
+            Err(crate::config::ConfigError::NotFound(_)) => {
+                RpcResponse::error(id, protocol::CONFIG_ERROR, "config file not found")
+            }
+            Err(e) => RpcResponse::error(id, protocol::CONFIG_ERROR, e.to_string()),
+        },
     }
 }
 

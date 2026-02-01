@@ -94,6 +94,10 @@ pub enum TunnelStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelStats {
+    pub total_connections: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_session_start: Option<String>,
+    pub total_uptime_seconds: u64,
     pub reconnect_count: u64,
 }
 
@@ -137,6 +141,7 @@ pub enum Request {
     TunnelDisconnect { id: String },
     DaemonStatus,
     DaemonShutdown,
+    ConfigReload,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -168,6 +173,7 @@ impl Request {
             }),
             "daemon.status" => Ok(Self::DaemonStatus),
             "daemon.shutdown" => Ok(Self::DaemonShutdown),
+            "config.reload" => Ok(Self::ConfigReload),
             other => Err(ProtocolError::UnknownMethod(other.to_string())),
         }
     }

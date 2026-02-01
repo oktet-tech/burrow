@@ -185,6 +185,56 @@ impl TunnelManager {
         self.inner.lock().await.tunnels.len()
     }
 
+    /// Reload tunnels from a new config. Adds new tunnels, removes
+    /// disconnected tunnels no longer in config, warns about connected
+    /// tunnels removed from config (left until disconnected).
+    pub async fn reload_config(&self, config: &Config) {
+        let mut state = self.inner.lock().await;
+
+        // Add tunnels present in new config but not in manager
+        for (id, tunnel_config) in &config.tunnel {
+            if !state.tunnels.contains_key(id) {
+                let tunnel = Tunnel::new(id.clone(), tunnel_config.clone(), &config.defaults);
+                state.tunnels.insert(
+                    id.clone(),
+                    ManagedTunnel {
+                        tunnel,
+                        monitor: None,
+                        reconnect_task: None,
+                        consecutive_failures: 0,
+                    },
+                );
+                tracing::info!(tunnel_id = %id, "added tunnel from config reload");
+            }
+        }
+
+        // Remove tunnels absent from new config (only if disconnected)
+        let to_remove: Vec<String> = state
+            .tunnels
+            .iter()
+            .filter(|(id, _)| !config.tunnel.contains_key(*id))
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for id in to_remove {
+            let mt = state.tunnels.get(&id).unwrap();
+            let is_active = mt.tunnel.status == TunnelStatus::Connected
+                || mt.tunnel.status == TunnelStatus::Connecting;
+            if is_active {
+                tracing::warn!(
+                    tunnel_id = %id,
+                    "tunnel removed from config but still connected, keeping until disconnected"
+                );
+            } else {
+                state.tunnels.remove(&id);
+                tracing::info!(tunnel_id = %id, "removed tunnel (no longer in config)");
+            }
+        }
+
+        state.state_dirty.notify_one();
+        tracing::info!(count = state.tunnels.len(), "config reload complete");
+    }
+
     /// Merge persisted state into loaded tunnels. Config defines what tunnels
     /// exist; state restores enabled flag and accumulated stats.
     pub async fn apply_state(&self, persisted: &State) {
