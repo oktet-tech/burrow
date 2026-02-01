@@ -116,6 +116,40 @@ pub fn daemon_status() {
     }
 }
 
+// -- Tunnel commands --
+
+pub fn connect(id: &str) {
+    match send_rpc("tunnel.connect", json!({ "id": id })) {
+        Ok(resp) => {
+            if let Some(err) = resp.error {
+                eprintln!("error: {}", err.message);
+                std::process::exit(1);
+            }
+            println!("tunnel '{id}' connected");
+        }
+        Err(_) => {
+            eprintln!("daemon is not running");
+            std::process::exit(1);
+        }
+    }
+}
+
+pub fn disconnect(id: &str) {
+    match send_rpc("tunnel.disconnect", json!({ "id": id })) {
+        Ok(resp) => {
+            if let Some(err) = resp.error {
+                eprintln!("error: {}", err.message);
+                std::process::exit(1);
+            }
+            println!("tunnel '{id}' disconnected");
+        }
+        Err(_) => {
+            eprintln!("daemon is not running");
+            std::process::exit(1);
+        }
+    }
+}
+
 // -- Status command --
 
 pub fn status() {

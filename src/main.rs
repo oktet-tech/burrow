@@ -12,6 +12,8 @@ fn main() {
 
     match cli.command {
         Some(Commands::Status) => cli::commands::status(),
+        Some(Commands::Connect { ref id }) => cli::commands::connect(id),
+        Some(Commands::Disconnect { ref id }) => cli::commands::disconnect(id),
         Some(Commands::DaemonForeground) => run_daemon_foreground(),
         Some(Commands::Daemon { command }) => match command {
             DaemonCommand::Start => cli::commands::daemon_start(),

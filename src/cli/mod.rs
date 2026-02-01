@@ -13,6 +13,16 @@ pub struct Cli {
 pub enum Commands {
     /// Show tunnel status
     Status,
+    /// Connect a tunnel
+    Connect {
+        /// Tunnel ID
+        id: String,
+    },
+    /// Disconnect a tunnel
+    Disconnect {
+        /// Tunnel ID
+        id: String,
+    },
     /// Manage the background daemon
     Daemon {
         #[command(subcommand)]
