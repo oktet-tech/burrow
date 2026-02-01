@@ -101,7 +101,7 @@ directories = "5"
 
 ### Phase 3: Robustness ← CURRENT
 - [ ] Network change detection (macOS: SCNetworkReachability)
-- [ ] On-demand stub listeners
+- [x] On-demand stub listeners
 - [x] Port conflict detection and handling
 - [x] Log rotation
 - [x] First-run sample config generation
