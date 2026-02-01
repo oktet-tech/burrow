@@ -207,6 +207,8 @@ pub enum ConfigCommand {
     Path,
     /// Open config file in $EDITOR
     Edit,
+    /// Validate config file and report errors
+    Validate,
     /// Reload config file in the running daemon
     Reload,
 }

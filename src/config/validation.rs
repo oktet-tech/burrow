@@ -19,8 +19,48 @@ pub enum ValidationError {
     MissingReverseRemotePort(String),
 }
 
+impl ValidationError {
+    pub fn tunnel_id(&self) -> &str {
+        match self {
+            Self::InvalidTunnelId(id)
+            | Self::EmptyName(id)
+            | Self::MissingRemoteHost(id)
+            | Self::MissingRemotePort(id)
+            | Self::MissingReverseRemotePort(id) => id,
+            Self::PortConflict(id, _, _) => id,
+        }
+    }
+
+    /// Which config field this error relates to (None for section-level issues).
+    pub fn field_name(&self) -> Option<&str> {
+        match self {
+            Self::InvalidTunnelId(_) => None,
+            Self::EmptyName(_) => Some("name"),
+            Self::PortConflict(..) => Some("local_port"),
+            Self::MissingRemoteHost(_) => Some("remote_host"),
+            Self::MissingRemotePort(_) | Self::MissingReverseRemotePort(_) => Some("remote_port"),
+        }
+    }
+
+    pub fn suggestion(&self) -> &str {
+        match self {
+            Self::InvalidTunnelId(_) => {
+                "use lowercase alphanumeric with hyphens, e.g. 'my-tunnel'"
+            }
+            Self::EmptyName(_) => "add: name = \"My Tunnel\"",
+            Self::PortConflict(..) => "each tunnel must use a unique local_port",
+            Self::MissingRemoteHost(_) => "add: remote_host = \"hostname\"",
+            Self::MissingRemotePort(_) | Self::MissingReverseRemotePort(_) => {
+                "add: remote_port = <port>"
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ValidationWarning {
+    /// Tunnel ID if tunnel-specific, None for global warnings.
+    pub tunnel_id: Option<String>,
     pub message: String,
 }
 
@@ -58,6 +98,7 @@ pub fn validate_config(config: &Config) -> ValidationResult {
         // Name uniqueness (warning, not error per DESIGN.md)
         if let Some(&other_id) = names_seen.get(tunnel.name.as_str()) {
             warnings.push(ValidationWarning {
+                tunnel_id: Some(id.clone()),
                 message: format!(
                     "tunnel '{}': name '{}' is also used by tunnel '{}'",
                     id, tunnel.name, other_id
@@ -101,6 +142,7 @@ pub fn validate_config(config: &Config) -> ValidationResult {
             let path = PathBuf::from(identity);
             if !path.exists() {
                 warnings.push(ValidationWarning {
+                    tunnel_id: Some(id.clone()),
                     message: format!(
                         "tunnel '{}': identity file not found: {}",
                         id,
@@ -109,9 +151,64 @@ pub fn validate_config(config: &Config) -> ValidationResult {
                 });
             }
         }
+
+        // Check per-tunnel SSH binary override
+        if let Some(ref binary) = tunnel.ssh_binary {
+            if let Some(msg) = check_ssh_binary(binary) {
+                warnings.push(ValidationWarning {
+                    tunnel_id: Some(id.clone()),
+                    message: format!("tunnel '{}': {}", id, msg),
+                });
+            }
+        }
+    }
+
+    // Check default SSH binary
+    if let Some(msg) = check_ssh_binary(&config.defaults.ssh_binary) {
+        warnings.push(ValidationWarning {
+            tunnel_id: None,
+            message: format!("defaults: {}", msg),
+        });
     }
 
     ValidationResult { errors, warnings }
+}
+
+/// Check if an SSH binary exists and is executable.
+/// Returns an error message if not found, None if OK.
+fn check_ssh_binary(binary: &str) -> Option<String> {
+    let path = std::path::Path::new(binary);
+    if path.is_absolute() {
+        if !path.exists() {
+            return Some(format!("SSH binary not found: {binary}"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = path.metadata() {
+                if meta.permissions().mode() & 0o111 == 0 {
+                    return Some(format!("SSH binary not executable: {binary}"));
+                }
+            }
+        }
+    } else if !find_in_path(binary) {
+        return Some(format!("SSH binary '{binary}' not found in PATH"));
+    }
+    None
+}
+
+/// Search PATH for a binary by name.
+fn find_in_path(name: &str) -> bool {
+    let Ok(path_var) = std::env::var("PATH") else {
+        return false;
+    };
+    for dir in path_var.split(':') {
+        let candidate = std::path::Path::new(dir).join(name);
+        if candidate.is_file() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Tunnel IDs must be lowercase alphanumeric with hyphens, non-empty,
@@ -308,5 +405,43 @@ mod tests {
     fn expand_tilde_no_prefix() {
         let expanded = expand_tilde("/absolute/path");
         assert_eq!(expanded, PathBuf::from("/absolute/path"));
+    }
+
+    #[test]
+    fn ssh_binary_absolute_not_found() {
+        let msg = check_ssh_binary("/nonexistent/ssh");
+        assert!(msg.is_some());
+        assert!(msg.unwrap().contains("not found"));
+    }
+
+    #[test]
+    fn ssh_binary_in_path_found() {
+        // "ssh" should exist on any dev machine
+        let msg = check_ssh_binary("ssh");
+        assert!(msg.is_none());
+    }
+
+    #[test]
+    fn ssh_binary_bogus_name_not_in_path() {
+        let msg = check_ssh_binary("definitely-not-a-real-binary-xyz");
+        assert!(msg.is_some());
+        assert!(msg.unwrap().contains("not found in PATH"));
+    }
+
+    #[test]
+    fn validation_error_metadata() {
+        let e = ValidationError::MissingRemoteHost("dev-db".into());
+        assert_eq!(e.tunnel_id(), "dev-db");
+        assert_eq!(e.field_name(), Some("remote_host"));
+        assert!(!e.suggestion().is_empty());
+    }
+
+    #[test]
+    fn bad_ssh_binary_produces_warning() {
+        let mut t = local_tunnel("Test", 5432);
+        t.ssh_binary = Some("/nonexistent/custom-ssh".into());
+        let config = make_config(vec![("test", t)]);
+        let result = validate_config(&config);
+        assert!(result.warnings.iter().any(|w| w.message.contains("SSH binary not found")));
     }
 }

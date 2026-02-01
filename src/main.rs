@@ -19,6 +19,8 @@ fn main() {
             command: ConfigCommand::Path
         }) | Some(Commands::Config {
             command: ConfigCommand::Edit
+        }) | Some(Commands::Config {
+            command: ConfigCommand::Validate
         }) | Some(Commands::DaemonForeground)
     ) {
         if let Some(path) = config::sample::ensure_config_exists() {
@@ -55,6 +57,7 @@ fn main() {
         Some(Commands::Config { command }) => match command {
             ConfigCommand::Path => cli::commands::config_path(),
             ConfigCommand::Edit => cli::commands::config_edit(),
+            ConfigCommand::Validate => cli::commands::config_validate(),
             ConfigCommand::Reload => cli::commands::config_reload(),
         },
         Some(Commands::DaemonForeground) => run_daemon_foreground(),

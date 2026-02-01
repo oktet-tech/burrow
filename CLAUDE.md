@@ -106,6 +106,8 @@ directories = "5"
 - [x] Log rotation
 - [x] First-run sample config generation
 - [x] `burrow service install/uninstall`
+- [x] `burrow config validate` with detailed errors
+- [x] Daemon fail-fast on invalid config
 - [ ] Linux network detection (netlink)
 
 ### Phase 4: GUI

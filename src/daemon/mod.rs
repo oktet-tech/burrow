@@ -13,6 +13,8 @@ use crate::config;
 pub enum DaemonError {
     #[error("{0}")]
     Io(#[from] std::io::Error),
+    #[error("invalid configuration: {0}")]
+    Config(String),
 }
 
 /// Platform-appropriate IPC socket path.
@@ -71,7 +73,8 @@ pub async fn run() -> Result<(), DaemonError> {
         std::fs::create_dir_all(parent)?;
     }
 
-    // Load config -- missing config is fine, we just start with zero tunnels
+    // Load config -- missing config is fine, we just start with zero tunnels.
+    // Validation or parse errors are fatal: fail fast so the user sees the problem.
     let mgr = manager::TunnelManager::new();
     match config::load_config() {
         Ok(cfg) => mgr.load_tunnels(&cfg).await,
@@ -80,6 +83,7 @@ pub async fn run() -> Result<(), DaemonError> {
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to load config");
+            return Err(DaemonError::Config(e.to_string()));
         }
     }
 

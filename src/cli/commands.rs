@@ -348,6 +348,114 @@ pub fn config_edit() {
     }
 }
 
+pub fn config_validate() {
+    let path = crate::config::config_path();
+
+    if !path.exists() {
+        eprintln!("config file not found: {}", path.display());
+        eprintln!("  run 'burrow config edit' to create one");
+        std::process::exit(1);
+    }
+
+    println!("Validating {}...", path.display());
+    println!();
+
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read config: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Try TOML parse first -- toml errors already include line/column
+    let mut config: crate::config::Config = match toml::from_str(&raw) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Parse error:");
+            // toml::de::Error includes line/column in its Display
+            for line in e.to_string().lines() {
+                eprintln!("  {line}");
+            }
+            std::process::exit(1);
+        }
+    };
+
+    // Expand ~ in identity paths (same as load_config_from)
+    for tunnel in config.tunnel.values_mut() {
+        if let Some(ref identity) = tunnel.identity {
+            let expanded = crate::config::expand_tilde(identity);
+            tunnel.identity = Some(expanded.to_string_lossy().into_owned());
+        }
+    }
+
+    let result = crate::config::validate_config(&config);
+    let has_errors = !result.errors.is_empty();
+    let has_warnings = !result.warnings.is_empty();
+
+    if has_errors {
+        eprintln!("Errors:");
+        for err in &result.errors {
+            let line = find_tunnel_line(&raw, err.tunnel_id());
+            let prefix = match line {
+                Some(n) => format!("  line {n}:"),
+                None => "  ".to_string(),
+            };
+            eprintln!("{prefix} {err}");
+            eprintln!("    hint: {}", err.suggestion());
+        }
+        if has_warnings {
+            eprintln!();
+        }
+    }
+
+    if has_warnings {
+        eprintln!("Warnings:");
+        for w in &result.warnings {
+            let line = w
+                .tunnel_id
+                .as_deref()
+                .and_then(|id| find_tunnel_line(&raw, id));
+            let prefix = match line {
+                Some(n) => format!("  line {n}:"),
+                None => "  ".to_string(),
+            };
+            eprintln!("{prefix} {}", w.message);
+        }
+    }
+
+    if has_errors {
+        eprintln!();
+        eprintln!(
+            "Config has {} error(s) and {} warning(s).",
+            result.errors.len(),
+            result.warnings.len()
+        );
+        std::process::exit(1);
+    } else if has_warnings {
+        eprintln!();
+        println!(
+            "Config is valid with {} warning(s). ({} tunnel(s))",
+            result.warnings.len(),
+            config.tunnel.len()
+        );
+    } else {
+        println!("Config is valid. ({} tunnel(s))", config.tunnel.len());
+    }
+}
+
+/// Find the line number of a `[tunnel.<id>]` section header in raw TOML.
+fn find_tunnel_line(raw: &str, tunnel_id: &str) -> Option<usize> {
+    let needle = format!("tunnel.{tunnel_id}");
+    for (i, line) in raw.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.contains(&needle) {
+            return Some(i + 1);
+        }
+    }
+    None
+}
+
 pub fn config_reload() {
     match send_rpc("config.reload", json!({})) {
         Ok(resp) => {
@@ -762,5 +870,23 @@ mod tests {
         )];
         let out = format_tunnel_table(&tunnels);
         assert!(out.contains("\u{2192}  -"));
+    }
+
+    #[test]
+    fn find_tunnel_line_finds_section() {
+        let raw = "\
+[defaults]
+ssh_binary = \"ssh\"
+
+[tunnel.dev-db]
+name = \"Dev\"
+host = \"example.com\"
+
+[tunnel.prod]
+name = \"Prod\"
+";
+        assert_eq!(find_tunnel_line(raw, "dev-db"), Some(4));
+        assert_eq!(find_tunnel_line(raw, "prod"), Some(8));
+        assert_eq!(find_tunnel_line(raw, "nonexistent"), None);
     }
 }
