@@ -398,6 +398,41 @@ impl TunnelManager {
         self.connect_all().await
     }
 
+    /// Reset backoff and reconnect auto-mode tunnels in error/disconnected state.
+    /// Called on network change to recover tunnels quickly instead of waiting
+    /// for the exponential backoff timer.
+    pub async fn reconnect_errored(&self) {
+        let ids: Vec<String> = {
+            let mut inner = self.inner.lock().await;
+            let mut candidates = Vec::new();
+            for (id, mt) in &mut inner.tunnels {
+                if mt.tunnel.enabled
+                    && mt.tunnel.config().mode == TunnelMode::Auto
+                    && (mt.tunnel.status == TunnelStatus::Error
+                        || mt.tunnel.status == TunnelStatus::Disconnected)
+                {
+                    mt.consecutive_failures = 0;
+                    if let Some(handle) = mt.reconnect_task.take() {
+                        handle.abort();
+                    }
+                    candidates.push(id.clone());
+                }
+            }
+            candidates
+        };
+
+        if ids.is_empty() {
+            return;
+        }
+
+        tracing::info!(count = ids.len(), "reconnecting errored tunnels after network change");
+        for id in &ids {
+            if let Err(e) = self.connect(id).await {
+                tracing::warn!(tunnel_id = %id, error = %e, "network-triggered reconnect failed");
+            }
+        }
+    }
+
     /// Snapshot of all tunnels for IPC responses.
     pub async fn list(&self) -> Vec<TunnelInfo> {
         let state = self.inner.lock().await;
