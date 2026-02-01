@@ -81,7 +81,7 @@ directories = "5"
 - [x] IPC protocol types (JSON-RPC request/response)
 - [x] Basic daemon (start, IPC listener, shutdown)
 - [x] CLI skeleton (clap, daemon start/stop/status)
-- [ ] Single tunnel spawn (SSH process, exit detection)
+- [x] Single tunnel spawn (SSH process, exit detection)
 - [ ] Basic `burrow status` showing tunnel states
 
 **Skip:** GUI, on-demand mode, network detection, reconnection, notifications
