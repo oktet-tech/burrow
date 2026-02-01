@@ -1,6 +1,7 @@
 pub mod manager;
 pub mod server;
 pub mod state;
+pub mod stub;
 pub mod tunnel;
 
 use std::path::{Path, PathBuf};
@@ -91,6 +92,9 @@ pub async fn run() -> Result<(), DaemonError> {
 
     // Connect tunnels with mode=auto and enabled=true
     mgr.connect_auto_tunnels().await;
+
+    // Bind stub listeners for on-demand tunnels
+    mgr.start_on_demand_stubs().await;
 
     tracing::info!("starting daemon, socket: {}", path.display());
 

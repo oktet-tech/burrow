@@ -136,8 +136,11 @@ impl Tunnel {
         self.last_error = None;
         self.port_conflict = false;
 
-        // Pre-spawn port check for tunnel types that bind locally
-        if matches!(self.config.tunnel_type, TunnelType::Local | TunnelType::Socks) {
+        // Pre-spawn port check for tunnel types that bind locally.
+        // Skip for on-demand: the stub listener manages the port.
+        if matches!(self.config.tunnel_type, TunnelType::Local | TunnelType::Socks)
+            && self.config.mode != TunnelMode::OnDemand
+        {
             if let Err(e) = TcpListener::bind(("127.0.0.1", self.config.local_port)) {
                 if e.kind() == std::io::ErrorKind::AddrInUse {
                     self.port_conflict = true;
