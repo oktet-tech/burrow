@@ -1,0 +1,12 @@
+[Unit]
+Description=Burrow SSH Tunnel Manager
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{EXE_PATH}} daemon-foreground
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
