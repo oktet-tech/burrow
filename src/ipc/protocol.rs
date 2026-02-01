@@ -94,10 +94,6 @@ pub enum TunnelStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelStats {
-    pub total_connections: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub current_session_start: Option<String>,
-    pub total_uptime_seconds: u64,
     pub reconnect_count: u64,
 }
 

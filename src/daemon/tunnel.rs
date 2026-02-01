@@ -3,8 +3,8 @@ use std::process::Stdio;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
-use crate::config::schema::{Defaults, TunnelConfig, TunnelType};
-use crate::ipc::protocol::{TunnelInfo, TunnelStatus};
+use crate::config::schema::{Defaults, TunnelConfig, TunnelMode, TunnelType};
+use crate::ipc::protocol::{TunnelInfo, TunnelStats, TunnelStatus};
 
 pub struct Tunnel {
     pub id: String,
@@ -14,6 +14,7 @@ pub struct Tunnel {
     pub status: TunnelStatus,
     pub last_error: Option<String>,
     pub pid: Option<u32>,
+    pub reconnect_count: u64,
 }
 
 impl Tunnel {
@@ -32,6 +33,7 @@ impl Tunnel {
             status: TunnelStatus::Disconnected,
             last_error: None,
             pid: None,
+            reconnect_count: 0,
         }
     }
 
@@ -152,6 +154,11 @@ impl Tunnel {
         tracing::warn!(tunnel_id = %self.id, error = ?self.last_error, "SSH process exited");
     }
 
+    /// Whether this tunnel should auto-reconnect after an unexpected exit.
+    pub fn should_reconnect(&self) -> bool {
+        self.config.mode == TunnelMode::Auto && self.status == TunnelStatus::Error
+    }
+
     /// Mark as disconnected (user-initiated stop).
     pub fn record_disconnect(&mut self) {
         self.pid = None;
@@ -186,7 +193,9 @@ impl Tunnel {
             host: self.config.host.clone(),
             enabled: true,
             last_error: self.last_error.clone(),
-            stats: None,
+            stats: Some(TunnelStats {
+                reconnect_count: self.reconnect_count,
+            }),
         }
     }
 
