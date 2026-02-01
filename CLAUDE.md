@@ -89,9 +89,9 @@ directories = "5"
 ### Phase 2: Tunnel Lifecycle ← CURRENT
 - [x] All tunnel types (local, reverse, socks)
 - [x] Reconnection with exponential backoff
-- [ ] State persistence (state.json)
-- [ ] `tunnel add/remove/modify` CLI commands
-- [ ] Config reload without restart
+- [x] State persistence (state.json)
+- [x] `tunnel add/remove/modify` CLI commands
+- [x] Config reload without restart
 - [ ] `enable/disable` commands
 - [ ] `connect-all`, `disconnect-all`, `restart-all`
 
