@@ -14,6 +14,8 @@ fn main() {
         Some(Commands::Status) => cli::commands::status(),
         Some(Commands::Connect { ref id }) => cli::commands::connect(id),
         Some(Commands::Disconnect { ref id }) => cli::commands::disconnect(id),
+        Some(Commands::Enable { ref id }) => cli::commands::enable(id),
+        Some(Commands::Disable { ref id }) => cli::commands::disable(id),
         Some(Commands::Tunnel { command }) => match command {
             TunnelCommand::Add(args) => cli::tunnel_cmds::tunnel_add(args),
             TunnelCommand::Remove { ref id, force } => cli::tunnel_cmds::tunnel_remove(id, force),

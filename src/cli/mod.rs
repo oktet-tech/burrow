@@ -24,6 +24,16 @@ pub enum Commands {
         /// Tunnel ID
         id: String,
     },
+    /// Enable a tunnel (auto-connects if mode is auto)
+    Enable {
+        /// Tunnel ID
+        id: String,
+    },
+    /// Disable a tunnel (disconnects if connected)
+    Disable {
+        /// Tunnel ID
+        id: String,
+    },
     /// Manage tunnel configuration
     Tunnel {
         #[command(subcommand)]

@@ -150,6 +150,38 @@ pub fn disconnect(id: &str) {
     }
 }
 
+pub fn enable(id: &str) {
+    match send_rpc("tunnel.enable", json!({ "id": id })) {
+        Ok(resp) => {
+            if let Some(err) = resp.error {
+                eprintln!("error: {}", err.message);
+                std::process::exit(1);
+            }
+            println!("tunnel '{id}' enabled");
+        }
+        Err(_) => {
+            eprintln!("daemon is not running");
+            std::process::exit(1);
+        }
+    }
+}
+
+pub fn disable(id: &str) {
+    match send_rpc("tunnel.disable", json!({ "id": id })) {
+        Ok(resp) => {
+            if let Some(err) = resp.error {
+                eprintln!("error: {}", err.message);
+                std::process::exit(1);
+            }
+            println!("tunnel '{id}' disabled");
+        }
+        Err(_) => {
+            eprintln!("daemon is not running");
+            std::process::exit(1);
+        }
+    }
+}
+
 // -- Status command --
 
 pub fn status() {
