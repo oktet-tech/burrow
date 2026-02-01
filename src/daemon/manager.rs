@@ -10,6 +10,7 @@ use crate::config::schema::{Config, TunnelMode};
 use crate::ipc::protocol::{BulkResult, ReloadResult, TunnelInfo, TunnelStatus};
 
 use super::state::{self, PersistedTunnel, PersistedTunnelStats, State};
+use super::stub;
 use super::tunnel::{read_stderr, Tunnel};
 
 const MAX_BACKOFF_SECS: u64 = 300;
@@ -23,6 +24,8 @@ struct ManagedTunnel {
     reconnect_task: Option<JoinHandle<()>>,
     /// Consecutive failures since last successful connect. Drives backoff.
     consecutive_failures: u32,
+    /// On-demand stub listener. Drop aborts and releases the port.
+    stub_handle: Option<stub::StubHandle>,
 }
 
 struct ExitEvent {
@@ -100,9 +103,9 @@ impl TunnelManager {
             daemon_started: chrono::Utc::now().to_rfc3339(),
         }));
 
-        Self::spawn_exit_handler(Arc::clone(&inner), exit_rx);
-
-        Self { inner }
+        let mgr = Self { inner };
+        Self::spawn_exit_handler(Arc::clone(&mgr.inner), exit_rx, mgr.clone());
+        mgr
     }
 
     /// Populate tunnels from config. Does not start any -- that's the caller's job.
@@ -117,6 +120,7 @@ impl TunnelManager {
                     monitor: None,
                     reconnect_task: None,
                     consecutive_failures: 0,
+                    stub_handle: None,
                 },
             );
         }
@@ -136,6 +140,9 @@ impl TunnelManager {
         if let Some(handle) = mt.reconnect_task.take() {
             handle.abort();
         }
+
+        // Stop stub listener if active (frees port for SSH)
+        mt.stub_handle = None;
 
         let result = start_tunnel(mt, &exit_tx);
         state.state_dirty.notify_one();
@@ -163,10 +170,11 @@ impl TunnelManager {
         Ok(())
     }
 
-    /// Enable a tunnel. If mode==auto, also connect it.
+    /// Enable a tunnel. Auto-connect if mode==auto, start stub if on-demand.
     pub async fn enable(&self, id: &str) -> Result<(), String> {
-        {
+        let mode = {
             let mut state = self.inner.lock().await;
+            let state_dirty = state.state_dirty.clone();
             let mt = state
                 .tunnels
                 .get_mut(id)
@@ -176,19 +184,26 @@ impl TunnelManager {
                 return Ok(());
             }
             mt.tunnel.enabled = true;
-            state.state_dirty.notify_one();
-        }
+            let mode = mt.tunnel.config().mode;
+            state_dirty.notify_one();
+            mode
+        };
 
-        // Auto-connect outside the lock to avoid holding it during SSH spawn
-        if self.should_auto_connect(id).await {
-            if let Err(e) = self.connect(id).await {
-                tracing::warn!(tunnel_id = %id, error = %e, "enabled but failed to auto-connect");
+        match mode {
+            TunnelMode::Auto => {
+                if let Err(e) = self.connect(id).await {
+                    tracing::warn!(tunnel_id = %id, error = %e, "enabled but failed to auto-connect");
+                }
             }
+            TunnelMode::OnDemand => {
+                self.restart_stub_if_needed(id).await;
+            }
+            TunnelMode::Manual => {}
         }
         Ok(())
     }
 
-    /// Disable a tunnel. Disconnects if currently connected.
+    /// Disable a tunnel. Disconnects if connected, stops stub if on-demand.
     pub async fn disable(&self, id: &str) -> Result<(), String> {
         let was_active = {
             let mut state = self.inner.lock().await;
@@ -198,6 +213,7 @@ impl TunnelManager {
                 .ok_or_else(|| format!("tunnel '{id}' not found"))?;
 
             mt.tunnel.enabled = false;
+            mt.stub_handle = None;
             let active = mt.tunnel.status == TunnelStatus::Connected
                 || mt.tunnel.status == TunnelStatus::Connecting;
             state.state_dirty.notify_one();
@@ -210,13 +226,109 @@ impl TunnelManager {
         Ok(())
     }
 
-    async fn should_auto_connect(&self, id: &str) -> bool {
-        let state = self.inner.lock().await;
-        state
-            .tunnels
-            .get(id)
-            .map(|mt| mt.tunnel.config().mode == TunnelMode::Auto)
-            .unwrap_or(false)
+    /// Called by the stub listener when an on-demand connection arrives.
+    /// The stub has already dropped its listener to free the port.
+    pub async fn handle_on_demand(
+        &self,
+        id: &str,
+        held_stream: tokio::net::TcpStream,
+        local_port: u16,
+    ) {
+        let connect_result = {
+            let mut state = self.inner.lock().await;
+            let exit_tx = state.exit_tx.clone();
+
+            let Some(mt) = state.tunnels.get_mut(id) else {
+                tracing::error!(tunnel_id = %id, "on-demand trigger for unknown tunnel");
+                return;
+            };
+
+            // Stub task is exiting; clear the handle
+            mt.stub_handle = None;
+
+            let result = start_tunnel(mt, &exit_tx);
+            state.state_dirty.notify_one();
+            result
+        };
+
+        match connect_result {
+            Ok(()) => {
+                let tunnel_id = id.to_string();
+                tokio::spawn(async move {
+                    stub::wait_and_proxy(held_stream, local_port, &tunnel_id).await;
+                });
+            }
+            Err(e) => {
+                tracing::error!(tunnel_id = %id, error = %e, "failed to start on-demand tunnel");
+                self.restart_stub_if_needed(id).await;
+            }
+        }
+    }
+
+    /// Start stub listeners for all enabled on-demand tunnels that don't have one.
+    pub async fn start_on_demand_stubs(&self) {
+        let candidates: Vec<(String, String, u16)> = {
+            let state = self.inner.lock().await;
+            state
+                .tunnels
+                .iter()
+                .filter(|(_, mt)| {
+                    mt.tunnel.enabled
+                        && mt.tunnel.config().mode == TunnelMode::OnDemand
+                        && mt.tunnel.status == TunnelStatus::Disconnected
+                        && mt.stub_handle.is_none()
+                })
+                .map(|(id, mt)| {
+                    (
+                        id.clone(),
+                        mt.tunnel.config().name.clone(),
+                        mt.tunnel.config().local_port,
+                    )
+                })
+                .collect()
+        };
+
+        for (id, name, port) in candidates {
+            self.start_stub_for(&id, &name, port).await;
+        }
+    }
+
+    /// Re-bind stub listener for an on-demand tunnel if appropriate.
+    pub async fn restart_stub_if_needed(&self, id: &str) {
+        let info = {
+            let state = self.inner.lock().await;
+            state.tunnels.get(id).and_then(|mt| {
+                if mt.tunnel.config().mode == TunnelMode::OnDemand
+                    && mt.tunnel.enabled
+                    && mt.stub_handle.is_none()
+                {
+                    Some((mt.tunnel.config().name.clone(), mt.tunnel.config().local_port))
+                } else {
+                    None
+                }
+            })
+        };
+        if let Some((name, port)) = info {
+            self.start_stub_for(id, &name, port).await;
+        }
+    }
+
+    async fn start_stub_for(&self, id: &str, name: &str, port: u16) {
+        match stub::spawn_stub(id.to_string(), name.to_string(), port, self.clone()) {
+            Ok(handle) => {
+                let mut state = self.inner.lock().await;
+                if let Some(mt) = state.tunnels.get_mut(id) {
+                    mt.stub_handle = Some(handle);
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    tunnel_id = %id,
+                    error = %e,
+                    "failed to bind stub listener"
+                );
+            }
+        }
     }
 
     /// Connect all enabled tunnels (auto and manual modes).
@@ -382,6 +494,7 @@ impl TunnelManager {
                         monitor: None,
                         reconnect_task: None,
                         consecutive_failures: 0,
+                        stub_handle: None,
                     },
                 );
                 result.added.push(id.clone());
@@ -396,6 +509,8 @@ impl TunnelManager {
 
             for id in &to_update {
                 if let Some(mt) = state.tunnels.get_mut(id) {
+                    // Stop stub before config change (mode/port may differ)
+                    mt.stub_handle = None;
                     let new_cfg = config.tunnel[id].clone();
                     mt.tunnel.update_config(new_cfg, &config.defaults);
                     mt.consecutive_failures = 0;
@@ -415,6 +530,9 @@ impl TunnelManager {
                 result.errors.push(msg);
             }
         }
+
+        // Phase 5: start stubs for new/updated on-demand tunnels
+        self.start_on_demand_stubs().await;
 
         tracing::info!(
             added = result.added.len(),
@@ -522,41 +640,59 @@ impl TunnelManager {
     fn spawn_exit_handler(
         inner: Arc<Mutex<Inner>>,
         mut exit_rx: mpsc::UnboundedReceiver<ExitEvent>,
+        mgr: TunnelManager,
     ) {
         tokio::spawn(async move {
             while let Some(event) = exit_rx.recv().await {
-                let mut state = inner.lock().await;
-                let state_dirty = state.state_dirty.clone();
-                let Some(mt) = state.tunnels.get_mut(&event.id) else {
-                    continue;
-                };
+                let needs_stub = {
+                    let mut state = inner.lock().await;
+                    let state_dirty = state.state_dirty.clone();
+                    let Some(mt) = state.tunnels.get_mut(&event.id) else {
+                        continue;
+                    };
 
-                mt.monitor = None;
-                mt.tunnel.record_exit(event.code, event.stderr);
-                state_dirty.notify_one();
+                    mt.monitor = None;
+                    mt.tunnel.record_exit(event.code, event.stderr);
+                    state_dirty.notify_one();
 
-                if !mt.tunnel.should_reconnect() {
-                    continue;
+                    // Auto-mode: schedule reconnect with backoff
+                    if mt.tunnel.should_reconnect() {
+                        mt.consecutive_failures += 1;
+                        let delay = backoff_delay(mt.consecutive_failures);
+
+                        tracing::info!(
+                            tunnel_id = %event.id,
+                            delay_secs = delay.as_secs(),
+                            failures = mt.consecutive_failures,
+                            "scheduling reconnect"
+                        );
+
+                        let reconnect_inner = Arc::clone(&inner);
+                        let tunnel_id = event.id.clone();
+
+                        let handle = tokio::spawn(async move {
+                            Self::reconnect_loop(reconnect_inner, tunnel_id, delay).await;
+                        });
+
+                        mt.reconnect_task = Some(handle);
+                        false
+                    } else {
+                        // On-demand: re-bind stub listener after SSH exits
+                        mt.tunnel.config().mode == TunnelMode::OnDemand
+                            && mt.tunnel.enabled
+                            && mt.stub_handle.is_none()
+                    }
+                }; // lock released
+
+                if needs_stub {
+                    let mgr = mgr.clone();
+                    let id = event.id.clone();
+                    tokio::spawn(async move {
+                        // Brief delay for OS to release the port
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        mgr.restart_stub_if_needed(&id).await;
+                    });
                 }
-
-                mt.consecutive_failures += 1;
-                let delay = backoff_delay(mt.consecutive_failures);
-
-                tracing::info!(
-                    tunnel_id = %event.id,
-                    delay_secs = delay.as_secs(),
-                    failures = mt.consecutive_failures,
-                    "scheduling reconnect"
-                );
-
-                let reconnect_inner = Arc::clone(&inner);
-                let tunnel_id = event.id.clone();
-
-                let handle = tokio::spawn(async move {
-                    Self::reconnect_loop(reconnect_inner, tunnel_id, delay).await;
-                });
-
-                mt.reconnect_task = Some(handle);
             }
         });
     }
