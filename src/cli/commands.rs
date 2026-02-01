@@ -227,6 +227,91 @@ fn bulk_command(method: &str, verb: &str) {
     }
 }
 
+// -- Logs command --
+
+pub fn logs(args: &crate::cli::LogsArgs) {
+    let path = crate::common::logging::log_path();
+
+    if !path.exists() {
+        eprintln!("no log file found at: {}", path.display());
+        std::process::exit(1);
+    }
+
+    if args.follow {
+        logs_follow(&path, args.tunnel.as_deref());
+    } else {
+        logs_tail(&path, args.tunnel.as_deref());
+    }
+}
+
+/// Print the last 100 lines (optionally filtered).
+fn logs_tail(path: &std::path::Path, tunnel_filter: Option<&str>) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("failed to read log file: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let lines: Vec<&str> = content.lines().collect();
+    let tail = if lines.len() > 100 { &lines[lines.len() - 100..] } else { &lines };
+
+    for line in tail {
+        if matches_filter(line, tunnel_filter) {
+            println!("{line}");
+        }
+    }
+}
+
+/// Continuously tail the log file, printing new lines as they appear.
+fn logs_follow(path: &std::path::Path, tunnel_filter: Option<&str>) {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("failed to open log file: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Start from end of file
+    if let Err(e) = file.seek(SeekFrom::End(0)) {
+        eprintln!("failed to seek log file: {e}");
+        std::process::exit(1);
+    }
+
+    let mut buf = String::new();
+    loop {
+        buf.clear();
+        match file.read_to_string(&mut buf) {
+            Ok(0) => {
+                // No new data -- sleep and retry
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Ok(_) => {
+                for line in buf.lines() {
+                    if matches_filter(line, tunnel_filter) {
+                        println!("{line}");
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("error reading log file: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn matches_filter(line: &str, tunnel_filter: Option<&str>) -> bool {
+    match tunnel_filter {
+        None => true,
+        Some(id) => line.contains(id),
+    }
+}
+
 // -- Config commands --
 
 pub fn config_path() {

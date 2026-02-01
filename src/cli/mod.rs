@@ -40,6 +40,8 @@ pub enum Commands {
     DisconnectAll,
     /// Restart all enabled tunnels
     RestartAll,
+    /// View daemon logs
+    Logs(LogsArgs),
     /// Manage tunnel configuration
     Tunnel {
         #[command(subcommand)]
@@ -181,6 +183,16 @@ pub struct TunnelModifyArgs {
     /// Override keepalive setting
     #[arg(long)]
     pub keepalive: Option<bool>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct LogsArgs {
+    /// Continuously follow new log output
+    #[arg(long, short)]
+    pub follow: bool,
+    /// Filter logs by tunnel ID
+    #[arg(long)]
+    pub tunnel: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
