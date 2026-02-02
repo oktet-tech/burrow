@@ -39,6 +39,7 @@ pub enum Message {
     Quit,
 
     // User actions -- tunnels
+    ToggleEnabled(String, bool),
     Connect(String),
     Disconnect(String),
     ConnectAll,
@@ -172,6 +173,18 @@ impl BurrowApp {
             Message::Quit => self.quit(),
 
             // Tunnel actions
+            Message::ToggleEnabled(id, enabled) => {
+                if !enabled {
+                    // Suppress "disconnected" notification for user-initiated disable
+                    self.pending_user_disconnect.insert(id.clone());
+                }
+                let method = if enabled {
+                    "tunnel.enable"
+                } else {
+                    "tunnel.disable"
+                };
+                self.send_action(method, json!({ "id": id }))
+            }
             Message::Connect(id) => {
                 self.send_action("tunnel.connect", json!({ "id": id }))
             }

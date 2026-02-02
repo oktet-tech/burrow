@@ -1,5 +1,7 @@
 use iced::font::Weight;
-use iced::widget::{button, column, container, horizontal_rule, horizontal_space, row, text};
+use iced::widget::{
+    button, column, container, horizontal_rule, horizontal_space, row, text, toggler,
+};
 use iced::{Center, Color, Element, Font, Length};
 
 use crate::gui::app::Message;
@@ -55,26 +57,30 @@ pub fn view<'a>(tunnels: &'a [TunnelInfo]) -> Element<'a, Message> {
 ///   [dot] Name                    localhost:port -> remote
 ///         host       uptime/error/mode           [Button]
 fn tunnel_row<'a>(t: &'a TunnelInfo) -> Element<'a, Message> {
-    let (dot, dot_color) = status_indicator(t.status);
+    let enabled = t.enabled;
+    let (dot, dot_color) = status_indicator(t);
 
     let status_dot = container(text(dot).size(14).color(dot_color)).width(20.0);
 
+    let name_color = if enabled { Color::WHITE } else { style::DISABLED };
+    let port_color = if enabled { style::MUTED } else { style::DISABLED };
+
     // Line 1: name + port mapping
     let line1 = row![
-        text(&t.name).size(15).font(BOLD),
+        text(&t.name).size(15).font(BOLD).color(name_color),
         horizontal_space(),
-        text(port_mapping(t)).size(14).color(style::MUTED),
+        text(port_mapping(t)).size(14).color(port_color),
     ]
     .spacing(8)
     .align_y(Center);
 
     // Line 2: host + detail + action button
     let line2 = row![
-        text(&t.host).size(13).color(style::MUTED),
+        text(&t.host).size(13).color(port_color),
         horizontal_space(),
         text(status_detail(t))
             .size(13)
-            .color(detail_color(t.status)),
+            .color(detail_color(t)),
         action_button(t),
     ]
     .spacing(8)
@@ -82,8 +88,13 @@ fn tunnel_row<'a>(t: &'a TunnelInfo) -> Element<'a, Message> {
 
     let right = column![line1, line2].spacing(2).width(Length::Fill);
 
-    row![status_dot, right]
-        .spacing(4)
+    let id = t.id.clone();
+    let toggle = toggler(enabled)
+        .on_toggle(move |val| Message::ToggleEnabled(id.clone(), val))
+        .size(18.0);
+
+    row![toggle, status_dot, right]
+        .spacing(8)
         .width(Length::Fill)
         .padding([4, 0])
         .into()
@@ -91,8 +102,11 @@ fn tunnel_row<'a>(t: &'a TunnelInfo) -> Element<'a, Message> {
 
 // -- Helpers --
 
-fn status_indicator(status: TunnelStatus) -> (&'static str, Color) {
-    match status {
+fn status_indicator(t: &TunnelInfo) -> (&'static str, Color) {
+    if !t.enabled {
+        return ("\u{2014}", style::DISABLED); // em dash
+    }
+    match t.status {
         TunnelStatus::Connected => ("\u{25CF}", style::CONNECTED),   // filled circle
         TunnelStatus::Disconnected => ("\u{25CB}", style::DISCONNECTED), // open circle
         TunnelStatus::Connecting => ("\u{25D0}", style::CONNECTING), // half circle
@@ -115,6 +129,9 @@ fn port_mapping(t: &TunnelInfo) -> String {
 }
 
 fn status_detail(t: &TunnelInfo) -> String {
+    if !t.enabled {
+        return "disabled".into();
+    }
     match t.status {
         TunnelStatus::Connected => match t.stats {
             Some(ref s) => format!("uptime: {}", format_uptime(s.total_uptime_seconds)),
@@ -134,14 +151,20 @@ fn status_detail(t: &TunnelInfo) -> String {
     }
 }
 
-fn detail_color(status: TunnelStatus) -> Color {
-    match status {
+fn detail_color(t: &TunnelInfo) -> Color {
+    if !t.enabled {
+        return style::DISABLED;
+    }
+    match t.status {
         TunnelStatus::Error => style::ERROR,
         _ => style::MUTED,
     }
 }
 
 fn action_button(t: &TunnelInfo) -> Element<'_, Message> {
+    if !t.enabled {
+        return horizontal_space().width(0).into();
+    }
     match t.status {
         TunnelStatus::Connected => button(text("Disconnect").size(13))
             .on_press(Message::Disconnect(t.id.clone()))
