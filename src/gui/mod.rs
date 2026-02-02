@@ -5,11 +5,16 @@ mod style;
 mod tray;
 mod views;
 
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
 use app::BurrowApp;
 
 /// Entry point for the GUI. Runs iced daemon (no window on start -- opened
 /// on demand via tray menu). Must be called from the main thread.
 pub fn launch() {
+    ensure_daemon();
+
     // Tray and hide_from_dock happen inside new(), after iced has
     // initialized NSApplication. Creating NSApplication ourselves first
     // (via raw objc_msgSend) conflicts with winit/objc2's initialization.
@@ -17,6 +22,54 @@ pub fn launch() {
         .subscription(BurrowApp::subscription)
         .run_with(BurrowApp::new)
         .expect("iced daemon failed");
+}
+
+/// Start the daemon if it isn't already running.
+fn ensure_daemon() {
+    let socket = crate::daemon::socket_path();
+    if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+        return;
+    }
+
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(error = %e, "cannot determine executable path, skipping daemon start");
+            return;
+        }
+    };
+
+    match Command::new(&exe)
+        .arg("daemon-foreground")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => {
+            let pid = child.id();
+            let started = wait_for_socket(&socket, Duration::from_secs(3));
+            if started {
+                tracing::info!(pid, "started daemon");
+            } else {
+                tracing::warn!(pid, "daemon spawned but socket not ready after 3s");
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to spawn daemon");
+        }
+    }
+}
+
+fn wait_for_socket(socket: &std::path::Path, timeout: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if std::os::unix::net::UnixStream::connect(socket).is_ok() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
 }
 
 /// Set macOS activation policy to Accessory so the app appears only
