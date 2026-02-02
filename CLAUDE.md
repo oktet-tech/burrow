@@ -115,8 +115,8 @@ directories = "5"
 - [x] `burrow gui` CLI command (placeholder)
 - [x] Async IPC client (persistent connection, multiplexed requests, auto-reconnect)
 - [x] Log file tailer (async polling, rotation-aware, structured parsing)
-- [ ] Tray icon with status
-- [ ] Tray menu (tunnel list, quick actions)
+- [x] Tray icon (template icon, macOS Dock hiding, CFRunLoop event pump)
+- [x] Tray menu (Open Window placeholder, Quit with daemon.shutdown)
 - [ ] Main window (tunnel list view)
 - [ ] Log viewer panel
 - [ ] Desktop notifications
