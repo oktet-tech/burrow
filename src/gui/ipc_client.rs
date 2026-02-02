@@ -63,6 +63,12 @@ pub struct GuiIpcClient {
     cmd_tx: mpsc::Sender<ClientCmd>,
 }
 
+impl std::fmt::Debug for GuiIpcClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GuiIpcClient").finish()
+    }
+}
+
 impl GuiIpcClient {
     /// Spawn the background connection task.
     /// Returns the client handle and a receiver for daemon lifecycle events.
