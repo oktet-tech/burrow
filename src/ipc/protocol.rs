@@ -43,6 +43,25 @@ pub struct RpcNotification {
     pub params: Value,
 }
 
+impl RpcNotification {
+    pub fn log_line(line: &LogLine) -> Self {
+        Self {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            method: "log.line".to_string(),
+            params: serde_json::to_value(line).expect("LogLine must serialize"),
+        }
+    }
+}
+
+/// A structured log line, broadcast over IPC to subscribed clients.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogLine {
+    pub timestamp: String,
+    pub level: String,
+    pub target: String,
+    pub message: String,
+}
+
 impl RpcResponse {
     pub fn success(id: u64, result: impl Serialize) -> Self {
         Self {
@@ -164,6 +183,7 @@ pub enum Request {
     DaemonStatus,
     DaemonShutdown,
     ConfigReload,
+    LogsSubscribe { last_n: u64 },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -177,6 +197,16 @@ pub enum ProtocolError {
 #[derive(Debug, Deserialize)]
 struct TunnelIdParams {
     id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LogsSubscribeParams {
+    #[serde(default = "default_last_n")]
+    last_n: u64,
+}
+
+fn default_last_n() -> u64 {
+    100
 }
 
 impl Request {
@@ -205,6 +235,10 @@ impl Request {
             "daemon.status" => Ok(Self::DaemonStatus),
             "daemon.shutdown" => Ok(Self::DaemonShutdown),
             "config.reload" => Ok(Self::ConfigReload),
+            "logs.subscribe" => {
+                let p: LogsSubscribeParams = serde_json::from_value(req.params.clone())?;
+                Ok(Self::LogsSubscribe { last_n: p.last_n })
+            }
             other => Err(ProtocolError::UnknownMethod(other.to_string())),
         }
     }
