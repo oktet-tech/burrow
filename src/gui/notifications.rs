@@ -1,25 +1,42 @@
-use notify_rust::Notification;
+// On macOS, notify-rust uses mac-notification-sys which swizzles
+// NSBundle.bundleIdentifier globally. This corrupts winit/iced's view
+// of the process identity and causes crashes when opening windows.
+// Use osascript instead -- no swizzle, no FFI conflicts.
 
-/// Register a known bundle ID so mac-notification-sys doesn't try to
-/// resolve the bogus "use_default" app name via AppleScript, which
-/// pops up the macOS application picker dialog.
 #[cfg(target_os = "macos")]
-pub fn init() {
-    let _ = notify_rust::set_application("com.apple.Terminal");
+fn send(title: &str, body: &str) {
+    use std::process::Command;
+
+    // AppleScript: display notification "body" with title "title"
+    let script = if body.is_empty() {
+        format!("display notification \"\" with title \"{}\"", escape(title))
+    } else {
+        format!(
+            "display notification \"{}\" with title \"{}\"",
+            escape(body),
+            escape(title),
+        )
+    };
+
+    std::thread::spawn(move || {
+        let _ = Command::new("osascript").arg("-e").arg(&script).output();
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn init() {}
+fn send(title: &str, body: &str) {
+    use notify_rust::Notification;
 
-fn send(summary: &str, body: &str) {
     let mut n = Notification::new();
-    n.appname("Burrow").summary(summary);
+    n.appname("Burrow").summary(title).icon("network-server");
     if !body.is_empty() {
         n.body(body);
     }
-    #[cfg(not(target_os = "macos"))]
-    n.icon("network-server");
-
     if let Err(e) = n.show() {
         tracing::debug!(error = %e, "failed to show desktop notification");
     }
