@@ -54,7 +54,9 @@ fn rotate_if_needed(path: &PathBuf) -> io::Result<()> {
 
 /// Set up tracing with file output and stderr output.
 /// Rotates log file on startup if it exceeds the size limit.
-pub fn init_logging() {
+/// When `broadcast` is provided, log events are also pushed into the broadcast
+/// channel for IPC subscribers (daemon mode).
+pub fn init_logging(broadcast: Option<&super::log_broadcast::LogBroadcast>) {
     let path = log_path();
 
     if let Some(parent) = path.parent() {
@@ -73,6 +75,8 @@ pub fn init_logging() {
         .append(true)
         .open(&path);
 
+    let broadcast_layer = broadcast.map(|b| b.layer());
+
     match file {
         Ok(file) => {
             use tracing_subscriber::prelude::*;
@@ -88,13 +92,18 @@ pub fn init_logging() {
                 .with(env_filter)
                 .with(file_layer)
                 .with(stderr_layer)
+                .with(broadcast_layer)
                 .init();
         }
         Err(e) => {
             // Fallback: stderr-only logging
             eprintln!("warning: cannot open log file {}: {e}", path.display());
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
+            use tracing_subscriber::prelude::*;
+
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+                .with(broadcast_layer)
                 .init();
         }
     }

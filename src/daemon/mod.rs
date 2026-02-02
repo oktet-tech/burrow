@@ -7,6 +7,7 @@ pub mod tunnel;
 
 use std::path::{Path, PathBuf};
 
+use crate::common::log_broadcast::LogBroadcast;
 use crate::config;
 
 #[derive(Debug, thiserror::Error)]
@@ -64,7 +65,7 @@ fn cleanup_stale_socket(path: &Path) -> Result<(), DaemonError> {
 }
 
 /// Start the daemon. Blocks until shutdown is requested via IPC.
-pub async fn run() -> Result<(), DaemonError> {
+pub async fn run(broadcast: LogBroadcast) -> Result<(), DaemonError> {
     let path = socket_path();
 
     cleanup_stale_socket(&path)?;
@@ -106,7 +107,7 @@ pub async fn run() -> Result<(), DaemonError> {
 
     tracing::info!("starting daemon, socket: {}", path.display());
 
-    let result = server::run(&path, mgr.clone()).await;
+    let result = server::run(&path, mgr.clone(), broadcast).await;
 
     // Final state save before exit
     mgr.save_state_now(&state_file).await;

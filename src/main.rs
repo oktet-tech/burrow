@@ -81,11 +81,12 @@ fn main() {
 
 /// Hidden entry point for the spawned daemon process.
 fn run_daemon_foreground() {
-    common::logging::init_logging();
+    let broadcast = common::log_broadcast::LogBroadcast::new(512);
+    common::logging::init_logging(Some(&broadcast));
 
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
-    if let Err(e) = rt.block_on(daemon::run()) {
+    if let Err(e) = rt.block_on(daemon::run(broadcast)) {
         tracing::error!(error = %e, "daemon exited with error");
         std::process::exit(1);
     }
