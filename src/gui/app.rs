@@ -253,8 +253,9 @@ impl BurrowApp {
     // -- Tray sync --
 
     fn sync_tray(&mut self) {
-        // Only rebuild menu when data changes; set_menu dismisses an open dropdown.
-        if self.tunnels != self.last_menu_tunnels
+        // Only rebuild menu when menu-visible fields change; set_menu dismisses
+        // an open dropdown, so we must not rebuild on stats-only changes (uptime).
+        if !tray_relevant_eq(&self.tunnels, &self.last_menu_tunnels)
             || self.daemon_connected != self.last_menu_daemon_connected
         {
             self.tray.set_menu(Some(Box::new(tray::build_menu(
@@ -430,6 +431,15 @@ fn export_logs(logs: &[LogEvent]) {
         Ok(()) => tracing::info!(path = %path.display(), lines = logs.len(), "logs exported"),
         Err(e) => tracing::error!(error = %e, "failed to export logs"),
     }
+}
+
+/// Compare only the fields that affect the tray menu (id, name, status, enabled).
+/// Ignores stats/uptime which change every poll and would cause menu rebuilds.
+fn tray_relevant_eq(a: &[TunnelInfo], b: &[TunnelInfo]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b.iter()).all(|(x, y)| {
+            x.id == y.id && x.name == y.name && x.status == y.status && x.enabled == y.enabled
+        })
 }
 
 // -- IPC subscription --
