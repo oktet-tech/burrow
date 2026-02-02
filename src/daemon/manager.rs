@@ -395,6 +395,9 @@ impl TunnelManager {
     /// Disconnect all, then connect all enabled tunnels.
     pub async fn restart_all(&self) -> BulkResult {
         self.disconnect_all().await;
+        // SSH processes need time to exit and release ports before we
+        // reconnect, otherwise the new connections hit port conflicts.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         self.connect_all().await
     }
 
