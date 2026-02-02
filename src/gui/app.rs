@@ -60,6 +60,10 @@ pub enum Message {
 pub struct BurrowApp {
     tray: TrayIcon,
     current_tray_status: AggregateStatus,
+    /// Tunnel snapshot from the last menu rebuild, used to avoid
+    /// redundant set_menu calls that dismiss the open dropdown.
+    last_menu_tunnels: Vec<TunnelInfo>,
+    last_menu_daemon_connected: bool,
     window_id: Option<window::Id>,
 
     tunnels: Vec<TunnelInfo>,
@@ -83,6 +87,8 @@ impl BurrowApp {
             Self {
                 tray,
                 current_tray_status: AggregateStatus::NoneConnected,
+                last_menu_tunnels: Vec::new(),
+                last_menu_daemon_connected: false,
                 window_id: None,
 
                 tunnels: Vec::new(),
@@ -235,10 +241,17 @@ impl BurrowApp {
     // -- Tray sync --
 
     fn sync_tray(&mut self) {
-        self.tray.set_menu(Some(Box::new(tray::build_menu(
-            &self.tunnels,
-            self.daemon_connected,
-        ))));
+        // Only rebuild menu when data changes; set_menu dismisses an open dropdown.
+        if self.tunnels != self.last_menu_tunnels
+            || self.daemon_connected != self.last_menu_daemon_connected
+        {
+            self.tray.set_menu(Some(Box::new(tray::build_menu(
+                &self.tunnels,
+                self.daemon_connected,
+            ))));
+            self.last_menu_tunnels = self.tunnels.clone();
+            self.last_menu_daemon_connected = self.daemon_connected;
+        }
 
         let new_status = tray::aggregate_status(&self.tunnels, self.daemon_connected);
         if new_status != self.current_tray_status {

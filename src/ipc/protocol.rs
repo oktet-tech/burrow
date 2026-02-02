@@ -111,7 +111,7 @@ pub enum TunnelStatus {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TunnelStats {
     pub total_connections: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -121,7 +121,7 @@ pub struct TunnelStats {
 }
 
 /// Tunnel info returned by tunnel.list and tunnel.get.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TunnelInfo {
     pub id: String,
     pub name: String,
