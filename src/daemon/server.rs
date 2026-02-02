@@ -6,13 +6,18 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::watch;
 
-use crate::ipc::protocol::{self, DaemonInfo, Request, RpcRequest, RpcResponse};
+use crate::common::log_broadcast::LogBroadcast;
+use crate::ipc::protocol::{self, DaemonInfo, Request, RpcNotification, RpcRequest, RpcResponse};
 
 use super::manager::TunnelManager;
 use super::DaemonError;
 
 /// Bind the IPC socket and serve requests until daemon.shutdown.
-pub async fn run(socket_path: &Path, mgr: TunnelManager) -> Result<(), DaemonError> {
+pub async fn run(
+    socket_path: &Path,
+    mgr: TunnelManager,
+    broadcast: LogBroadcast,
+) -> Result<(), DaemonError> {
     let listener = UnixListener::bind(socket_path)?;
 
     #[cfg(unix)]
@@ -38,9 +43,10 @@ pub async fn run(socket_path: &Path, mgr: TunnelManager) -> Result<(), DaemonErr
                     Ok((stream, _addr)) => {
                         let shutdown_tx = shutdown_tx.clone();
                         let mgr = mgr.clone();
+                        let broadcast = broadcast.clone();
                         tokio::spawn(async move {
                             if let Err(e) = handle_connection(
-                                stream, started, started_epoch, shutdown_tx, mgr,
+                                stream, started, started_epoch, shutdown_tx, mgr, broadcast,
                             ).await {
                                 tracing::error!(error = %e, "connection handler failed");
                             }
@@ -69,45 +75,82 @@ async fn handle_connection(
     started_epoch: u64,
     shutdown_tx: watch::Sender<bool>,
     mgr: TunnelManager,
+    broadcast: LogBroadcast,
 ) -> Result<(), std::io::Error> {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
+    let mut log_rx: Option<tokio::sync::broadcast::Receiver<protocol::LogLine>> = None;
 
-    while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        let response = match serde_json::from_str::<RpcRequest>(&line) {
-            Ok(rpc_req) => match Request::from_rpc(&rpc_req) {
-                Ok(request) => {
-                    let is_shutdown = matches!(request, Request::DaemonShutdown);
-                    let resp =
-                        handle_request(rpc_req.id, request, started, started_epoch, &mgr).await;
-
-                    if is_shutdown {
-                        write_response(&mut writer, &resp).await?;
-                        let _ = shutdown_tx.send(true);
-                        return Ok(());
-                    }
-                    resp
-                }
-                Err(e) => {
-                    let (code, msg) = match &e {
-                        protocol::ProtocolError::UnknownMethod(_) => {
-                            (protocol::METHOD_NOT_FOUND, e.to_string())
-                        }
-                        protocol::ProtocolError::InvalidParams(_) => {
-                            (protocol::INVALID_PARAMS, e.to_string())
-                        }
-                    };
-                    RpcResponse::error(rpc_req.id, code, msg)
-                }
-            },
-            Err(e) => RpcResponse::error(0, protocol::PARSE_ERROR, format!("parse error: {e}")),
+    loop {
+        // When not subscribed, the log branch uses pending() (never fires, zero cost).
+        let log_recv = async {
+            match log_rx.as_mut() {
+                Some(rx) => rx.recv().await,
+                None => std::future::pending().await,
+            }
         };
 
-        write_response(&mut writer, &response).await?;
+        tokio::select! {
+            line_result = lines.next_line() => {
+                let Some(line) = line_result? else { break };
+                if line.trim().is_empty() {
+                    continue;
+                }
+
+                let response = match serde_json::from_str::<RpcRequest>(&line) {
+                    Ok(rpc_req) => match Request::from_rpc(&rpc_req) {
+                        Ok(Request::LogsSubscribe { last_n }) => {
+                            // Flush recent lines as notifications, then subscribe
+                            let recent = broadcast.recent(last_n as usize);
+                            for log_line in &recent {
+                                write_notification(&mut writer, &RpcNotification::log_line(log_line)).await?;
+                            }
+                            log_rx = Some(broadcast.subscribe());
+                            RpcResponse::success(rpc_req.id, serde_json::json!({ "status": "subscribed" }))
+                        }
+                        Ok(request) => {
+                            let is_shutdown = matches!(request, Request::DaemonShutdown);
+                            let resp =
+                                handle_request(rpc_req.id, request, started, started_epoch, &mgr).await;
+
+                            if is_shutdown {
+                                write_response(&mut writer, &resp).await?;
+                                let _ = shutdown_tx.send(true);
+                                return Ok(());
+                            }
+                            resp
+                        }
+                        Err(e) => {
+                            let (code, msg) = match &e {
+                                protocol::ProtocolError::UnknownMethod(_) => {
+                                    (protocol::METHOD_NOT_FOUND, e.to_string())
+                                }
+                                protocol::ProtocolError::InvalidParams(_) => {
+                                    (protocol::INVALID_PARAMS, e.to_string())
+                                }
+                            };
+                            RpcResponse::error(rpc_req.id, code, msg)
+                        }
+                    },
+                    Err(e) => RpcResponse::error(0, protocol::PARSE_ERROR, format!("parse error: {e}")),
+                };
+
+                write_response(&mut writer, &response).await?;
+            }
+            log_result = log_recv => {
+                match log_result {
+                    Ok(log_line) => {
+                        write_notification(&mut writer, &RpcNotification::log_line(&log_line)).await?;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::debug!(skipped = n, "log subscriber lagged, some lines dropped");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        log_rx = None;
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
@@ -202,6 +245,10 @@ async fn handle_request(
             }
             Err(e) => RpcResponse::error(id, protocol::CONFIG_ERROR, e.to_string()),
         },
+        // Handled in handle_connection before dispatching here
+        Request::LogsSubscribe { .. } => {
+            RpcResponse::error(id, protocol::INTERNAL_ERROR, "unexpected dispatch")
+        }
     }
 }
 
@@ -210,6 +257,15 @@ async fn write_response(
     response: &RpcResponse,
 ) -> Result<(), std::io::Error> {
     let mut buf = serde_json::to_string(response).expect("response must serialize");
+    buf.push('\n');
+    writer.write_all(buf.as_bytes()).await
+}
+
+async fn write_notification(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    notification: &RpcNotification,
+) -> Result<(), std::io::Error> {
+    let mut buf = serde_json::to_string(notification).expect("notification must serialize");
     buf.push('\n');
     writer.write_all(buf.as_bytes()).await
 }
