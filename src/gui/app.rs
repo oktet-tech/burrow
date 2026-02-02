@@ -3,13 +3,16 @@ use std::time::Duration;
 
 use iced::futures::SinkExt;
 use iced::widget::{column, container, text};
+use iced::window;
 use iced::{Element, Length, Size, Subscription, Task};
 use serde_json::json;
+use tray_icon::TrayIcon;
 
 use crate::ipc::protocol::{TunnelInfo, TunnelStatus};
 
 use super::ipc_client::{DaemonEvent, GuiIpcClient, LogEvent};
 use super::notifications;
+use super::tray::{self, AggregateStatus, TUNNEL_ID_PREFIX};
 
 const MAX_LOG_LINES: usize = 1000;
 const STATUS_POLL_SECS: u64 = 2;
@@ -17,6 +20,7 @@ const STATUS_POLL_SECS: u64 = 2;
 // -- Messages --
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // some variants are reserved for GUI actions not yet wired
 pub enum Message {
     // IPC subscription events
     IpcReady(GuiIpcClient),
@@ -25,6 +29,14 @@ pub enum Message {
     TunnelStatusUpdate(Vec<TunnelInfo>),
     LogReceived(LogEvent),
     Tick,
+
+    // Tray menu
+    TrayMenuEvent(String),
+
+    // Window lifecycle
+    WindowOpened(window::Id),
+    WindowCloseRequested(window::Id),
+    Quit,
 
     // User actions -- tunnels
     Connect(String),
@@ -46,21 +58,32 @@ pub enum Message {
 // -- Application state --
 
 pub struct BurrowApp {
+    tray: TrayIcon,
+    current_tray_status: AggregateStatus,
+    window_id: Option<window::Id>,
+
     tunnels: Vec<TunnelInfo>,
     logs: Vec<LogEvent>,
     daemon_connected: bool,
     client: Option<GuiIpcClient>,
-    /// Skip notifications on the first tunnel poll after connecting to daemon.
     initial_fetch_done: bool,
-    /// Tunnel IDs the user explicitly disconnected; suppresses the "unexpected
-    /// disconnect" notification for those tunnels.
     pending_user_disconnect: HashSet<String>,
 }
 
 impl BurrowApp {
-    fn new() -> (Self, Task<Message>) {
+    /// Called inside the iced event loop, after NSApplication is initialized.
+    pub fn new() -> (Self, Task<Message>) {
+        #[cfg(target_os = "macos")]
+        super::hide_from_dock();
+
+        let tray = tray::create_tray();
+
         (
             Self {
+                tray,
+                current_tray_status: AggregateStatus::NoneConnected,
+                window_id: None,
+
                 tunnels: Vec::new(),
                 logs: Vec::new(),
                 daemon_connected: false,
@@ -72,11 +95,11 @@ impl BurrowApp {
         )
     }
 
-    fn title(&self) -> String {
+    pub fn title(&self, _window: window::Id) -> String {
         "Burrow".into()
     }
 
-    fn update(&mut self, message: Message) -> Task<Message> {
+    pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::IpcReady(client) => {
                 self.client = Some(client);
@@ -86,12 +109,14 @@ impl BurrowApp {
                 self.daemon_connected = true;
                 self.initial_fetch_done = false;
                 self.pending_user_disconnect.clear();
+                self.sync_tray();
                 self.fetch_tunnels()
             }
             Message::DaemonDisconnected(_) => {
                 self.daemon_connected = false;
                 self.initial_fetch_done = false;
                 self.tunnels.clear();
+                self.sync_tray();
                 Task::none()
             }
             Message::TunnelStatusUpdate(tunnels) => {
@@ -101,6 +126,7 @@ impl BurrowApp {
                     self.initial_fetch_done = true;
                 }
                 self.tunnels = tunnels;
+                self.sync_tray();
                 Task::none()
             }
             Message::LogReceived(event) => {
@@ -120,6 +146,26 @@ impl BurrowApp {
                     Task::none()
                 }
             }
+
+            // Tray menu dispatch
+            Message::TrayMenuEvent(id) => self.handle_tray_event(&id),
+
+            // Window lifecycle
+            Message::WindowOpened(id) => {
+                self.window_id = Some(id);
+                Task::none()
+            }
+            Message::WindowCloseRequested(id) => {
+                if self.window_id == Some(id) {
+                    self.window_id = None;
+                    window::close(id)
+                } else {
+                    Task::none()
+                }
+            }
+            Message::Quit => self.quit(),
+
+            // Tunnel actions
             Message::Connect(id) => {
                 self.send_action("tunnel.connect", json!({ "id": id }))
             }
@@ -137,9 +183,7 @@ impl BurrowApp {
                 self.send_action("tunnel.disconnect_all", json!({}))
             }
             Message::RestartAll => self.send_action("tunnel.restart_all", json!({})),
-            Message::ReloadConfig => {
-                self.send_config_reload()
-            }
+            Message::ReloadConfig => self.send_config_reload(),
             Message::ClearLogs => {
                 self.logs.clear();
                 Task::none()
@@ -156,7 +200,11 @@ impl BurrowApp {
         }
     }
 
-    fn view(&self) -> Element<'_, Message> {
+    pub fn view(&self, id: window::Id) -> Element<'_, Message> {
+        if self.window_id != Some(id) {
+            return container(text("")).into();
+        }
+
         if !self.daemon_connected {
             return container(
                 text("Waiting for daemon...")
@@ -175,9 +223,87 @@ impl BurrowApp {
         .into()
     }
 
-    fn subscription(&self) -> Subscription<Message> {
-        Subscription::run(ipc_subscription)
+    pub fn subscription(&self) -> Subscription<Message> {
+        Subscription::batch([
+            Subscription::run(ipc_subscription),
+            Subscription::run(tray_event_subscription),
+            window::close_requests().map(Message::WindowCloseRequested),
+        ])
     }
+
+    // -- Tray sync --
+
+    fn sync_tray(&mut self) {
+        self.tray.set_menu(Some(Box::new(tray::build_menu(
+            &self.tunnels,
+            self.daemon_connected,
+        ))));
+
+        let new_status = tray::aggregate_status(&self.tunnels, self.daemon_connected);
+        if new_status != self.current_tray_status {
+            self.current_tray_status = new_status;
+            let (icon, is_template) = tray::icon_for_status(new_status);
+            let _ = self.tray.set_icon(Some(icon));
+            self.tray.set_icon_as_template(is_template);
+        }
+    }
+
+    // -- Tray menu event handling --
+
+    fn handle_tray_event(&mut self, id: &str) -> Task<Message> {
+        match id {
+            "open-window" => self.open_window(),
+            "quit" => self.quit(),
+            "connect-all" => self.update(Message::ConnectAll),
+            "disconnect-all" => self.update(Message::DisconnectAll),
+            _ => {
+                if let Some(tunnel_id) = id.strip_prefix(TUNNEL_ID_PREFIX) {
+                    let connected = self.tunnels.iter().any(|t| {
+                        t.id == tunnel_id && t.status == TunnelStatus::Connected
+                    });
+                    if connected {
+                        self.update(Message::Disconnect(tunnel_id.to_string()))
+                    } else {
+                        self.update(Message::Connect(tunnel_id.to_string()))
+                    }
+                } else {
+                    Task::none()
+                }
+            }
+        }
+    }
+
+    // -- Window management --
+
+    fn open_window(&mut self) -> Task<Message> {
+        if let Some(id) = self.window_id {
+            return window::gain_focus(id);
+        }
+
+        let (id, open) = window::open(window::Settings {
+            size: Size::new(800.0, 600.0),
+            ..Default::default()
+        });
+        self.window_id = Some(id);
+        open.map(Message::WindowOpened)
+    }
+
+    fn quit(&self) -> Task<Message> {
+        // Best-effort daemon shutdown
+        if let Some(client) = &self.client {
+            let client = client.clone();
+            return Task::perform(
+                async move {
+                    let _ = client.request("daemon.shutdown", json!({})).await;
+                },
+                |()| Message::Quit,
+            )
+            .chain(iced::exit());
+        }
+        iced::exit()
+    }
+
+    // -- IPC helpers --
 
     fn fetch_tunnels(&self) -> Task<Message> {
         let Some(client) = self.client.clone() else {
@@ -214,8 +340,6 @@ impl BurrowApp {
         )
     }
 
-    /// Compare old and new tunnel lists, fire desktop notifications for
-    /// status transitions.
     fn emit_tunnel_notifications(&mut self, new: &[TunnelInfo]) {
         let old: HashMap<&str, &TunnelStatus> = self
             .tunnels
@@ -226,16 +350,13 @@ impl BurrowApp {
         for t in new {
             let prev = old.get(t.id.as_str()).copied();
             match (&t.status, prev) {
-                // Newly connected (was anything other than Connected before).
                 (TunnelStatus::Connected, Some(s)) if *s != TunnelStatus::Connected => {
                     notifications::tunnel_connected(&t.name);
                 }
-                // Transitioned to Error.
                 (TunnelStatus::Error, Some(s)) if *s != TunnelStatus::Error => {
                     let error = t.last_error.as_deref().unwrap_or("unknown error");
                     notifications::tunnel_error(&t.name, error);
                 }
-                // Was Connected, now Disconnected -- unexpected unless user did it.
                 (TunnelStatus::Disconnected, Some(TunnelStatus::Connected)) => {
                     if self.pending_user_disconnect.remove(&t.id) {
                         // User-initiated, no notification.
@@ -247,7 +368,6 @@ impl BurrowApp {
             }
         }
 
-        // Clean up stale entries from pending set (tunnels that no longer exist).
         let current_ids: HashSet<&str> = new.iter().map(|t| t.id.as_str()).collect();
         self.pending_user_disconnect
             .retain(|id| current_ids.contains(id.as_str()));
@@ -288,9 +408,6 @@ fn export_logs(logs: &[LogEvent]) {
 
 // -- IPC subscription --
 
-/// Long-lived subscription that maintains the daemon connection, streams
-/// events (connect/disconnect, log lines), and sends periodic ticks for
-/// tunnel status polling.
 fn ipc_subscription() -> impl iced::futures::Stream<Item = Message> {
     iced::stream::channel(100, |mut output| async move {
         let (client, mut event_rx) = GuiIpcClient::spawn();
@@ -326,16 +443,25 @@ fn ipc_subscription() -> impl iced::futures::Stream<Item = Message> {
     })
 }
 
-// -- Launch --
+// -- Tray event subscription --
 
-/// Launch the iced application window.
-///
-/// Currently runs as a standalone window. When tray-iced integration is
-/// wired up, this will switch to daemon mode (no default window) with
-/// windows opened on demand via the tray "Open Window" action.
-pub fn run() -> iced::Result {
-    iced::application(BurrowApp::title, BurrowApp::update, BurrowApp::view)
-        .subscription(BurrowApp::subscription)
-        .window_size(Size::new(800.0, 600.0))
-        .run_with(BurrowApp::new)
+fn tray_event_subscription() -> impl iced::futures::Stream<Item = Message> {
+    iced::stream::channel(32, |mut output| async move {
+        let rx = tray::menu_event_receiver();
+        loop {
+            // Poll the tray menu event receiver periodically.
+            // MenuEvent::receiver() is a crossbeam channel, not async.
+            match rx.try_recv() {
+                Ok(event) => {
+                    let id = event.id.as_ref().to_string();
+                    if output.send(Message::TrayMenuEvent(id)).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
+    })
 }

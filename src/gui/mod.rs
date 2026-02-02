@@ -5,19 +5,24 @@ mod style;
 mod tray;
 mod views;
 
-/// Entry point for the GUI. Hides from Dock, shows tray icon.
-/// Must be called from the main thread.
-pub fn launch() {
-    #[cfg(target_os = "macos")]
-    hide_from_dock();
+use app::BurrowApp;
 
-    tray::run();
+/// Entry point for the GUI. Runs iced daemon (no window on start -- opened
+/// on demand via tray menu). Must be called from the main thread.
+pub fn launch() {
+    // Tray and hide_from_dock happen inside new(), after iced has
+    // initialized NSApplication. Creating NSApplication ourselves first
+    // (via raw objc_msgSend) conflicts with winit/objc2's initialization.
+    iced::daemon(BurrowApp::title, BurrowApp::update, BurrowApp::view)
+        .subscription(BurrowApp::subscription)
+        .run_with(BurrowApp::new)
+        .expect("iced daemon failed");
 }
 
 /// Set macOS activation policy to Accessory so the app appears only
 /// in the menu bar, not the Dock or Cmd-Tab switcher.
 #[cfg(target_os = "macos")]
-fn hide_from_dock() {
+pub(super) fn hide_from_dock() {
     type Obj = *mut std::ffi::c_void;
     type Sel = *mut std::ffi::c_void;
 
@@ -27,7 +32,6 @@ fn hide_from_dock() {
         fn objc_msgSend();
     }
 
-    // objc_msgSend has a variadic ABI; cast to the exact signature needed.
     type SendNoArgs = unsafe extern "C" fn(Obj, Sel) -> Obj;
     type SendI64 = unsafe extern "C" fn(Obj, Sel, i64) -> Obj;
 
