@@ -14,6 +14,44 @@ const ICON_SIZE: u32 = 22;
 const TUNNEL_ID_PREFIX: &str = "tunnel:";
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 
+// -- Aggregate tunnel status for tray icon color --
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AggregateStatus {
+    AllConnected,  // green
+    SomeConnected, // yellow (includes connecting)
+    AnyError,      // red
+    NoneConnected, // gray (default / daemon offline)
+}
+
+fn aggregate_status(tunnels: &[TunnelInfo], daemon_connected: bool) -> AggregateStatus {
+    if !daemon_connected || tunnels.is_empty() {
+        return AggregateStatus::NoneConnected;
+    }
+
+    if tunnels.iter().any(|t| t.status == TunnelStatus::Error) {
+        return AggregateStatus::AnyError;
+    }
+
+    let enabled: Vec<_> = tunnels.iter().filter(|t| t.enabled).collect();
+    if enabled.is_empty() {
+        return AggregateStatus::NoneConnected;
+    }
+
+    let connected = enabled
+        .iter()
+        .filter(|t| t.status == TunnelStatus::Connected)
+        .count();
+
+    if connected == enabled.len() {
+        AggregateStatus::AllConnected
+    } else if connected > 0 || enabled.iter().any(|t| t.status == TunnelStatus::Connecting) {
+        AggregateStatus::SomeConnected
+    } else {
+        AggregateStatus::NoneConnected
+    }
+}
+
 // -- Commands from main thread to IPC background task --
 
 enum TrayCmd {
@@ -41,11 +79,10 @@ pub fn run() {
         rt.block_on(ipc_task(update_tx, cmd_rx));
     });
 
-    let icon = create_icon();
     let menu = build_menu(&[], false);
 
     let tray = TrayIconBuilder::new()
-        .with_icon(icon)
+        .with_icon(create_template_icon())
         .with_tooltip("Burrow - SSH Tunnel Manager")
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(true)
@@ -56,6 +93,7 @@ pub fn run() {
     let menu_rx = MenuEvent::receiver();
     let mut tunnels: Vec<TunnelInfo> = Vec::new();
     let mut daemon_connected = false;
+    let mut current_status = AggregateStatus::NoneConnected;
 
     loop {
         // macOS: process pending events so the tray menu works.
@@ -74,6 +112,14 @@ pub fn run() {
         }
         if needs_rebuild {
             tray.set_menu(Some(Box::new(build_menu(&tunnels, daemon_connected))));
+
+            let new_status = aggregate_status(&tunnels, daemon_connected);
+            if new_status != current_status {
+                current_status = new_status;
+                let (icon, is_template) = icon_for_status(new_status);
+                let _ = tray.set_icon(Some(icon));
+                tray.set_icon_as_template(is_template);
+            }
         }
 
         if let Ok(event) = menu_rx.try_recv() {
@@ -258,11 +304,32 @@ async fn send_state(
     });
 }
 
-// -- Icon / platform helpers --
+// -- Icon generation --
 
-/// Generate a small filled circle as the tray icon.
-/// Black-on-transparent so macOS template rendering adapts to dark/light mode.
-fn create_icon() -> Icon {
+/// Map aggregate status to a colored icon.
+/// Returns (icon, is_template). Template icons let macOS auto-adapt to
+/// light/dark menu bar; colored icons are non-template.
+fn icon_for_status(status: AggregateStatus) -> (Icon, bool) {
+    match status {
+        // Apple system colors for native look
+        AggregateStatus::AllConnected => (create_colored_icon(76, 217, 100), false),
+        AggregateStatus::SomeConnected => (create_colored_icon(255, 204, 0), false),
+        AggregateStatus::AnyError => (create_colored_icon(255, 59, 48), false),
+        AggregateStatus::NoneConnected => (create_template_icon(), true),
+    }
+}
+
+/// Black-on-transparent circle. macOS renders template icons adapting to
+/// the menu bar appearance (dark on light, light on dark).
+fn create_template_icon() -> Icon {
+    create_circle_icon(0, 0, 0)
+}
+
+fn create_colored_icon(r: u8, g: u8, b: u8) -> Icon {
+    create_circle_icon(r, g, b)
+}
+
+fn create_circle_icon(r: u8, g: u8, b: u8) -> Icon {
     let mut rgba = vec![0u8; (ICON_SIZE * ICON_SIZE * 4) as usize];
     let center = ICON_SIZE as f32 / 2.0;
     let radius = 5.0f32;
@@ -273,7 +340,9 @@ fn create_icon() -> Icon {
             let dy = y as f32 - center + 0.5;
             if dx * dx + dy * dy <= radius * radius {
                 let i = ((y * ICON_SIZE + x) * 4) as usize;
-                // Black pixel, fully opaque (template icon)
+                rgba[i] = r;
+                rgba[i + 1] = g;
+                rgba[i + 2] = b;
                 rgba[i + 3] = 255;
             }
         }
@@ -281,6 +350,8 @@ fn create_icon() -> Icon {
 
     Icon::from_rgba(rgba, ICON_SIZE, ICON_SIZE).expect("failed to create icon")
 }
+
+// -- Platform helpers --
 
 /// Run the CoreFoundation run loop briefly so macOS delivers tray/menu events.
 #[cfg(target_os = "macos")]
@@ -291,6 +362,93 @@ fn pump_macos_events() {
         Duration::from_millis(50),
         false,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_tunnel(id: &str, status: TunnelStatus, enabled: bool) -> TunnelInfo {
+        TunnelInfo {
+            id: id.into(),
+            name: id.into(),
+            tunnel_type: "local".into(),
+            mode: "auto".into(),
+            status,
+            local_port: 5432,
+            remote: None,
+            host: "host".into(),
+            enabled,
+            last_error: None,
+            stats: None,
+        }
+    }
+
+    #[test]
+    fn status_daemon_offline() {
+        let tunnels = vec![make_tunnel("a", TunnelStatus::Connected, true)];
+        assert_eq!(aggregate_status(&tunnels, false), AggregateStatus::NoneConnected);
+    }
+
+    #[test]
+    fn status_no_tunnels() {
+        assert_eq!(aggregate_status(&[], true), AggregateStatus::NoneConnected);
+    }
+
+    #[test]
+    fn status_all_disabled() {
+        let tunnels = vec![
+            make_tunnel("a", TunnelStatus::Disconnected, false),
+            make_tunnel("b", TunnelStatus::Disconnected, false),
+        ];
+        assert_eq!(aggregate_status(&tunnels, true), AggregateStatus::NoneConnected);
+    }
+
+    #[test]
+    fn status_all_connected() {
+        let tunnels = vec![
+            make_tunnel("a", TunnelStatus::Connected, true),
+            make_tunnel("b", TunnelStatus::Connected, true),
+            make_tunnel("c", TunnelStatus::Disconnected, false), // disabled, ignored
+        ];
+        assert_eq!(aggregate_status(&tunnels, true), AggregateStatus::AllConnected);
+    }
+
+    #[test]
+    fn status_some_connected() {
+        let tunnels = vec![
+            make_tunnel("a", TunnelStatus::Connected, true),
+            make_tunnel("b", TunnelStatus::Disconnected, true),
+        ];
+        assert_eq!(aggregate_status(&tunnels, true), AggregateStatus::SomeConnected);
+    }
+
+    #[test]
+    fn status_connecting_counts_as_some() {
+        let tunnels = vec![
+            make_tunnel("a", TunnelStatus::Connecting, true),
+            make_tunnel("b", TunnelStatus::Disconnected, true),
+        ];
+        assert_eq!(aggregate_status(&tunnels, true), AggregateStatus::SomeConnected);
+    }
+
+    #[test]
+    fn status_error_takes_priority() {
+        let tunnels = vec![
+            make_tunnel("a", TunnelStatus::Connected, true),
+            make_tunnel("b", TunnelStatus::Error, true),
+        ];
+        assert_eq!(aggregate_status(&tunnels, true), AggregateStatus::AnyError);
+    }
+
+    #[test]
+    fn status_none_connected_all_disconnected() {
+        let tunnels = vec![
+            make_tunnel("a", TunnelStatus::Disconnected, true),
+            make_tunnel("b", TunnelStatus::Disconnected, true),
+        ];
+        assert_eq!(aggregate_status(&tunnels, true), AggregateStatus::NoneConnected);
+    }
 }
 
 /// Best-effort daemon shutdown, then exit.
