@@ -1,5 +1,6 @@
 mod app;
 mod ipc_client;
+mod notifications;
 mod style;
 mod tray;
 mod views;
