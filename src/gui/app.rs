@@ -1,11 +1,11 @@
 use std::time::Duration;
 
 use iced::futures::SinkExt;
-use iced::widget::{column, container, text};
-use iced::{Element, Size, Subscription, Task};
+use iced::widget::{container, text};
+use iced::{Element, Length, Size, Subscription, Task};
 use serde_json::json;
 
-use crate::ipc::protocol::{TunnelInfo, TunnelStatus};
+use crate::ipc::protocol::TunnelInfo;
 
 use super::ipc_client::{DaemonEvent, GuiIpcClient, LogEvent};
 
@@ -110,23 +110,17 @@ impl BurrowApp {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let status_line = if self.daemon_connected {
-            let total = self.tunnels.len();
-            let active = self
-                .tunnels
-                .iter()
-                .filter(|t| t.status == TunnelStatus::Connected)
-                .count();
-            format!("Connected to daemon -- {active}/{total} tunnels active")
-        } else {
-            "Waiting for daemon...".into()
-        };
+        if !self.daemon_connected {
+            return container(
+                text("Waiting for daemon...")
+                    .size(16)
+                    .color(super::style::MUTED),
+            )
+            .center(Length::Fill)
+            .into();
+        }
 
-        container(
-            column![text("Burrow").size(20), text(status_line).size(14),].spacing(10),
-        )
-        .padding(20)
-        .into()
+        super::views::tunnel_list::view(&self.tunnels)
     }
 
     fn subscription(&self) -> Subscription<Message> {
