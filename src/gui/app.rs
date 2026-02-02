@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use iced::futures::SinkExt;
-use iced::widget::{container, text};
+use iced::widget::{column, container, text};
 use iced::{Element, Length, Size, Subscription, Task};
 use serde_json::json;
 
@@ -24,13 +24,17 @@ pub enum Message {
     LogReceived(LogEvent),
     Tick,
 
-    // User actions
+    // User actions -- tunnels
     Connect(String),
     Disconnect(String),
     ConnectAll,
     DisconnectAll,
     RestartAll,
     ReloadConfig,
+
+    // User actions -- logs
+    ClearLogs,
+    ExportLogs,
 
     // IPC action completed, triggers tunnel list refresh
     ActionDone,
@@ -105,6 +109,14 @@ impl BurrowApp {
             Message::DisconnectAll => self.send_action("tunnel.disconnect_all", json!({})),
             Message::RestartAll => self.send_action("tunnel.restart_all", json!({})),
             Message::ReloadConfig => self.send_action("config.reload", json!({})),
+            Message::ClearLogs => {
+                self.logs.clear();
+                Task::none()
+            }
+            Message::ExportLogs => {
+                export_logs(&self.logs);
+                Task::none()
+            }
             Message::ActionDone => self.fetch_tunnels(),
         }
     }
@@ -120,7 +132,12 @@ impl BurrowApp {
             .into();
         }
 
-        super::views::tunnel_list::view(&self.tunnels)
+        column![
+            super::views::tunnel_list::view(&self.tunnels),
+            super::views::logs::view(&self.logs),
+        ]
+        .height(Length::Fill)
+        .into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -148,6 +165,38 @@ impl BurrowApp {
             },
             |()| Message::ActionDone,
         )
+    }
+}
+
+// -- Log export --
+
+fn export_logs(logs: &[LogEvent]) {
+    let log_dir = crate::common::logging::log_path()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(std::env::temp_dir);
+
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let path = log_dir.join(format!("burrow-export-{epoch}.log"));
+
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let mut content = String::new();
+    for log in logs {
+        content.push_str(&format!(
+            "{} [{}] [{}] {}\n",
+            log.timestamp, log.level, log.target, log.message
+        ));
+    }
+
+    match std::fs::write(&path, &content) {
+        Ok(()) => tracing::info!(path = %path.display(), lines = logs.len(), "logs exported"),
+        Err(e) => tracing::error!(error = %e, "failed to export logs"),
     }
 }
 
