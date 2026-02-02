@@ -76,6 +76,7 @@ impl BurrowApp {
         #[cfg(target_os = "macos")]
         super::hide_from_dock();
 
+        notifications::init();
         let tray = tray::create_tray();
 
         (

@@ -1,13 +1,22 @@
 use notify_rust::Notification;
 
+/// Register a known bundle ID so mac-notification-sys doesn't try to
+/// resolve the bogus "use_default" app name via AppleScript, which
+/// pops up the macOS application picker dialog.
+#[cfg(target_os = "macos")]
+pub fn init() {
+    let _ = notify_rust::set_application("com.apple.Terminal");
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn init() {}
+
 fn send(summary: &str, body: &str) {
     let mut n = Notification::new();
     n.appname("Burrow").summary(summary);
     if !body.is_empty() {
         n.body(body);
     }
-    // On Linux, set a freedesktop icon hint (ignored on macOS).
-    // On macOS, Notification Center uses the sending application's bundle icon.
     #[cfg(not(target_os = "macos"))]
     n.icon("network-server");
 
