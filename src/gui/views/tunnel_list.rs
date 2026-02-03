@@ -66,12 +66,16 @@ fn tunnel_row(t: &TunnelInfo) -> Element<'_, Message> {
 
     let status_dot = container(text(dot).size(14).color(dot_color)).width(20.0);
 
-    let name_color = if enabled { Color::WHITE } else { style::DISABLED };
     let port_color = if enabled { style::MUTED } else { style::DISABLED };
 
     // Line 1: name + port mapping
+    let name_text = if enabled {
+        text(&t.name).size(15).font(BOLD)
+    } else {
+        text(&t.name).size(15).font(BOLD).color(style::DISABLED)
+    };
     let line1 = row![
-        text(&t.name).size(15).font(BOLD).color(name_color),
+        name_text,
         horizontal_space(),
         text(port_mapping(t)).size(14).color(port_color),
     ]
