@@ -99,7 +99,8 @@ fn tunnel_row(t: &TunnelInfo) -> Element<'_, Message> {
     let id = t.id.clone();
     let toggle = toggler(enabled)
         .on_toggle(move |val| Message::ToggleEnabled(id.clone(), val))
-        .size(18.0);
+        .size(18.0)
+        .width(Length::Shrink);
 
     let edit_btn = button(text("Edit").size(11))
         .on_press(Message::EditTunnel(t.id.clone()))
