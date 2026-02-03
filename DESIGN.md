@@ -77,7 +77,7 @@ keepalive = true             # Enable SSH keepalive
 [tunnel.dev-db]
 name = "Dev Database"        # Human-readable name (required)
 host = "bastion.example.com" # SSH host (required)
-port = 22                    # SSH port (default: 22)
+port = 22                    # SSH port (optional, defers to ssh config)
 type = "local"               # local | reverse | socks (required)
 mode = "auto"                # auto | manual | on-demand (default: auto)
 
@@ -89,7 +89,7 @@ remote_port = 5432           # Target port (required for local)
 # Optional overrides
 identity = "~/.ssh/work_key" # SSH identity file
 jump_host = "gateway.example.com"  # ProxyJump host
-jump_port = 22               # ProxyJump port (default: 22)
+jump_port = 22               # ProxyJump port (optional, defers to ssh config)
 ssh_binary = "/usr/local/bin/ssh"  # Override SSH binary
 keepalive = true             # Override keepalive setting
 
@@ -504,7 +504,6 @@ log_level = "info"           # trace | debug | info | warn | error
 # [tunnel.example-db]
 # name = "Example Database"
 # host = "bastion.example.com"
-# port = 22
 # type = "local"
 # mode = "auto"              # auto | manual | on-demand
 # local_port = 5432
@@ -512,7 +511,6 @@ log_level = "info"           # trace | debug | info | warn | error
 # remote_port = 5432
 # identity = "~/.ssh/id_rsa"
 # jump_host = "gateway.example.com"
-# jump_port = 22
 
 # Example: Reverse port forward (expose local service remotely)
 # [tunnel.example-expose]

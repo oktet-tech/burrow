@@ -107,7 +107,7 @@ pub struct TunnelAddArgs {
     /// Local bind port
     #[arg(long)]
     pub local_port: u16,
-    /// SSH port (default: 22)
+    /// SSH port (omit to use ssh config default)
     #[arg(long)]
     pub port: Option<u16>,
     /// Tunnel mode: auto, manual, or on-demand

@@ -116,13 +116,15 @@ impl Tunnel {
         if let Some(ref jump_host) = self.config.jump_host {
             args.push("-J".into());
             match self.config.jump_port {
-                Some(p) if p != 22 => args.push(format!("{jump_host}:{p}")),
-                _ => args.push(jump_host.clone()),
+                Some(p) => args.push(format!("{jump_host}:{p}")),
+                None => args.push(jump_host.clone()),
             }
         }
 
-        args.push("-p".into());
-        args.push(self.config.port.to_string());
+        if let Some(port) = self.config.port {
+            args.push("-p".into());
+            args.push(port.to_string());
+        }
 
         args.push(self.config.host.clone());
 
@@ -338,7 +340,7 @@ mod tests {
         TunnelConfig {
             name: "Dev Database".into(),
             host: "bastion.example.com".into(),
-            port: 22,
+            port: None,
             tunnel_type: TunnelType::Local,
             mode: TunnelMode::Auto,
             local_port: 59432,
@@ -368,8 +370,8 @@ mod tests {
         assert!(args.contains(&"/home/user/.ssh/work_key".to_string()));
         assert!(args.contains(&"-J".to_string()));
         assert!(args.contains(&"gateway.example.com".to_string()));
-        assert!(args.contains(&"-p".to_string()));
-        assert!(args.contains(&"22".to_string()));
+        // No -p flag when port is None (defers to ssh config)
+        assert!(!args.contains(&"-p".to_string()));
         // Host must be the last argument
         assert_eq!(args.last().unwrap(), "bastion.example.com");
     }
@@ -379,7 +381,7 @@ mod tests {
         let config = TunnelConfig {
             name: "Expose API".into(),
             host: "jumphost.example.com".into(),
-            port: 22,
+            port: None,
             tunnel_type: TunnelType::Reverse,
             mode: TunnelMode::Manual,
             local_port: 8080,
@@ -407,7 +409,7 @@ mod tests {
         let config = TunnelConfig {
             name: "Home SOCKS".into(),
             host: "home.example.com".into(),
-            port: 22,
+            port: None,
             tunnel_type: TunnelType::Socks,
             mode: TunnelMode::OnDemand,
             local_port: 1080,
@@ -427,6 +429,17 @@ mod tests {
         assert!(args.contains(&"-D".to_string()));
         assert!(args.contains(&"127.0.0.1:1080".to_string()));
         assert!(!args.iter().any(|a| a == "-L" || a == "-R"));
+    }
+
+    #[test]
+    fn explicit_port_adds_flag() {
+        let mut config = local_config();
+        config.port = Some(2222);
+        let t = Tunnel::new("t".into(), config, &defaults());
+        let args = t.build_ssh_args();
+
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"2222".to_string()));
     }
 
     #[test]
@@ -464,7 +477,7 @@ mod tests {
         let config = TunnelConfig {
             name: "Rev".into(),
             host: "h.example.com".into(),
-            port: 22,
+            port: None,
             tunnel_type: TunnelType::Reverse,
             mode: TunnelMode::Auto,
             local_port: 3000,
@@ -498,7 +511,7 @@ mod tests {
         let config = TunnelConfig {
             name: "Expose API".into(),
             host: "jump.example.com".into(),
-            port: 22,
+            port: None,
             tunnel_type: TunnelType::Reverse,
             mode: TunnelMode::Manual,
             local_port: 8080,
@@ -523,7 +536,7 @@ mod tests {
         let config = TunnelConfig {
             name: "SOCKS Proxy".into(),
             host: "home.example.com".into(),
-            port: 22,
+            port: None,
             tunnel_type: TunnelType::Socks,
             mode: TunnelMode::OnDemand,
             local_port: 1080,
@@ -626,7 +639,7 @@ mod tests {
         let config = TunnelConfig {
             name: "Rev".into(),
             host: "h.example.com".into(),
-            port: 22,
+            port: None,
             tunnel_type: TunnelType::Reverse,
             mode: TunnelMode::Auto,
             local_port: 3000,

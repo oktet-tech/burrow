@@ -827,7 +827,7 @@ mod tests {
             TunnelConfig {
                 name: "Dev Database".into(),
                 host: "bastion.example.com".into(),
-                port: 22,
+                port: None,
                 tunnel_type: TunnelType::Local,
                 mode: TunnelMode::Auto,
                 local_port: 59432,
@@ -847,7 +847,7 @@ mod tests {
             TunnelConfig {
                 name: "SOCKS Proxy".into(),
                 host: "home.example.com".into(),
-                port: 22,
+                port: None,
                 tunnel_type: TunnelType::Socks,
                 mode: TunnelMode::OnDemand,
                 local_port: 59080,
@@ -875,7 +875,7 @@ mod tests {
             TunnelConfig {
                 name: "Manual".into(),
                 host: "example.com".into(),
-                port: 22,
+                port: None,
                 tunnel_type: TunnelType::Local,
                 mode: TunnelMode::Manual,
                 local_port: 59999,

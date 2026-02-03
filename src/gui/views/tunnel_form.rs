@@ -50,7 +50,7 @@ impl Default for TunnelFormState {
             id: String::new(),
             id_manually_edited: false,
             host: String::new(),
-            ssh_port: "22".to_string(),
+            ssh_port: String::new(),
             local_port: String::new(),
             tunnel_type: TunnelTypeChoice::Local,
             mode: ModeChoice::Auto,
@@ -98,7 +98,7 @@ impl TunnelFormState {
             id: info.id.clone(),
             id_manually_edited: true,
             host: info.host.clone(),
-            ssh_port: "22".to_string(), // not exposed in TunnelInfo
+            ssh_port: String::new(), // not exposed in TunnelInfo
             local_port: info.local_port.to_string(),
             tunnel_type,
             mode,
@@ -542,7 +542,7 @@ mod tests {
         let state = TunnelFormState {
             name: "Test".into(),
             host: "example.com".into(),
-            ssh_port: "22".into(),
+            ssh_port: "2222".into(),
             local_port: "5432".into(),
             tunnel_type: TunnelTypeChoice::Local,
             remote_host: "db.internal".into(),

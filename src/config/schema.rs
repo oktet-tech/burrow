@@ -100,9 +100,9 @@ pub struct TunnelConfig {
     pub name: String,
     /// SSH host (required).
     pub host: String,
-    /// SSH port (default: 22).
-    #[serde(default = "default_ssh_port")]
-    pub port: u16,
+    /// SSH port (omit to use ssh config default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
     /// Tunnel type: local, reverse, or socks (required).
     #[serde(rename = "type")]
     pub tunnel_type: TunnelType,
@@ -133,7 +133,7 @@ pub struct TunnelConfig {
     /// ProxyJump host.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jump_host: Option<String>,
-    /// ProxyJump port (default: 22).
+    /// ProxyJump port (omit to use ssh config default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jump_port: Option<u16>,
     /// Override SSH binary for this tunnel.
@@ -142,10 +142,6 @@ pub struct TunnelConfig {
     /// Override keepalive setting for this tunnel.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keepalive: Option<bool>,
-}
-
-fn default_ssh_port() -> u16 {
-    22
 }
 
 #[cfg(test)]
@@ -170,7 +166,7 @@ remote_port = 5432
         assert_eq!(t.name, "Dev Database");
         assert_eq!(t.tunnel_type, TunnelType::Local);
         assert_eq!(t.mode, TunnelMode::Auto);
-        assert_eq!(t.port, 22);
+        assert!(t.port.is_none());
     }
 
     #[test]

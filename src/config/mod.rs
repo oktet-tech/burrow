@@ -233,7 +233,7 @@ identity = "~/.ssh/id_rsa"
             TunnelConfig {
                 name: "Dev Database".to_string(),
                 host: "bastion.example.com".to_string(),
-                port: 22,
+                port: None,
                 tunnel_type: TunnelType::Local,
                 mode: TunnelMode::Auto,
                 local_port: 5432,

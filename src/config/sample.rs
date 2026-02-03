@@ -17,7 +17,6 @@ log_level = "info"           # trace | debug | info | warn | error
 # [tunnel.example-db]
 # name = "Example Database"
 # host = "bastion.example.com"
-# port = 22
 # type = "local"
 # mode = "auto"              # auto | manual | on-demand
 # local_port = 5432
@@ -25,7 +24,6 @@ log_level = "info"           # trace | debug | info | warn | error
 # remote_port = 5432
 # identity = "~/.ssh/id_rsa"
 # jump_host = "gateway.example.com"
-# jump_port = 22
 
 # Example: Reverse port forward (expose local service remotely)
 # [tunnel.example-expose]

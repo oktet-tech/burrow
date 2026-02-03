@@ -251,7 +251,7 @@ mod tests {
         TunnelConfig {
             name: name.to_string(),
             host: "example.com".to_string(),
-            port: 22,
+            port: None,
             tunnel_type: TunnelType::Local,
             mode: TunnelMode::Auto,
             local_port: port,
@@ -337,7 +337,7 @@ mod tests {
         let t = TunnelConfig {
             name: "SOCKS".to_string(),
             host: "example.com".to_string(),
-            port: 22,
+            port: None,
             tunnel_type: TunnelType::Socks,
             mode: TunnelMode::Auto,
             local_port: 1080,
@@ -361,7 +361,7 @@ mod tests {
         let t = TunnelConfig {
             name: "Reverse".to_string(),
             host: "example.com".to_string(),
-            port: 22,
+            port: None,
             tunnel_type: TunnelType::Reverse,
             mode: TunnelMode::Manual,
             local_port: 8080,

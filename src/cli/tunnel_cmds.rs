@@ -23,7 +23,7 @@ pub fn tunnel_add(args: TunnelAddArgs) {
     let tunnel_config = TunnelConfig {
         name: args.name,
         host: args.host,
-        port: args.port.unwrap_or(22),
+        port: args.port,
         tunnel_type,
         mode,
         local_port: args.local_port,
@@ -106,7 +106,7 @@ pub fn tunnel_modify(args: TunnelModifyArgs) {
         tunnel.tunnel_type = parse_tunnel_type(tt);
     }
     if let Some(port) = args.port {
-        tunnel.port = port;
+        tunnel.port = Some(port);
     }
     if let Some(ref m) = args.mode {
         tunnel.mode = parse_tunnel_mode(m);
@@ -169,7 +169,9 @@ pub fn tunnel_show(id: &str) {
     println!("Tunnel: {id}");
     println!("  Name:        {}", tunnel.name);
     println!("  Host:        {}", tunnel.host);
-    println!("  Port:        {}", tunnel.port);
+    if let Some(port) = tunnel.port {
+        println!("  Port:        {port}");
+    }
     println!("  Type:        {}", tunnel.tunnel_type);
     println!("  Mode:        {}", tunnel.mode);
     println!("  Local port:  {}", tunnel.local_port);
