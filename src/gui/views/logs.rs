@@ -1,10 +1,11 @@
 use iced::font::Weight;
-use iced::widget::{button, column, container, horizontal_rule, horizontal_space, row, scrollable, text};
-use iced::{Center, Color, Element, Font, Length};
+use iced::widget::{
+    button, column, container, horizontal_rule, horizontal_space, row, text, text_editor,
+};
+use iced::{Center, Element, Font, Length};
 
 use crate::gui::app::Message;
 use crate::gui::ipc_client::LogEvent;
-use crate::gui::style;
 
 const BOLD: Font = Font {
     weight: Weight::Bold,
@@ -16,11 +17,8 @@ const MONO: Font = Font {
     ..Font::DEFAULT
 };
 
-/// Log viewer panel: scrollable log lines with Clear and Export buttons.
-/// Anchored to bottom so new entries are always visible.
-pub fn view<'a>(logs: &'a [LogEvent]) -> Element<'a, Message> {
-    let has_logs = !logs.is_empty();
-
+/// Log viewer panel: selectable text editor (read-only) with Clear and Export buttons.
+pub fn view<'a>(content: &'a text_editor::Content, has_logs: bool) -> Element<'a, Message> {
     let header = row![
         text("Logs").size(18).font(BOLD),
         horizontal_space(),
@@ -36,49 +34,35 @@ pub fn view<'a>(logs: &'a [LogEvent]) -> Element<'a, Message> {
     .spacing(8)
     .align_y(Center);
 
-    let mut log_col = column![].spacing(1);
-    for event in logs {
-        log_col = log_col.push(log_line(event));
-    }
+    let editor = text_editor(content)
+        .font(MONO)
+        .size(12)
+        .on_action(Message::LogEditorAction)
+        .height(Length::Fill);
 
-    let scroll = scrollable(log_col)
-        .anchor_bottom()
-        .height(Length::Fill)
-        .width(Length::Fill);
-
-    container(column![header, horizontal_rule(1), scroll].spacing(8))
+    container(column![header, horizontal_rule(1), editor].spacing(8))
         .padding(16)
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
 }
 
-fn log_line(event: &LogEvent) -> Element<'_, Message> {
+/// Format a single log event into a display line.
+pub fn format_log_line(event: &LogEvent) -> String {
     let time = extract_time(&event.timestamp);
-
-    let mut msg = text(&event.message).size(12).font(MONO);
-    if let Some(color) = level_color(&event.level) {
-        msg = msg.color(color);
-    }
-
-    row![
-        text(time).size(12).font(MONO).color(style::MUTED),
-        text(format!("[{}]", event.target))
-            .size(12)
-            .font(MONO)
-            .color(style::MUTED),
-        msg,
-    ]
-    .spacing(6)
-    .into()
+    format!("{time} {:<5} [{}] {}", event.level, event.target, event.message)
 }
 
-fn level_color(level: &str) -> Option<Color> {
-    match level.to_uppercase().as_str() {
-        "ERROR" => Some(style::ERROR),
-        "WARN" => Some(style::WARN),
-        _ => None,
+/// Build full text content from the log buffer.
+pub fn build_log_text(logs: &[LogEvent]) -> String {
+    let mut out = String::new();
+    for (i, event) in logs.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&format_log_line(event));
     }
+    out
 }
 
 /// Extract HH:MM:SS from a chrono-formatted timestamp ("2024-01-15T10:30:01.123").
@@ -122,20 +106,16 @@ mod tests {
     }
 
     #[test]
-    fn level_error_is_red() {
-        assert!(level_color("ERROR").is_some());
-        assert!(level_color("error").is_some());
-    }
-
-    #[test]
-    fn level_warn_is_colored() {
-        assert!(level_color("WARN").is_some());
-        assert!(level_color("warn").is_some());
-    }
-
-    #[test]
-    fn level_info_is_default() {
-        assert!(level_color("INFO").is_none());
-        assert!(level_color("DEBUG").is_none());
+    fn format_includes_level_and_target() {
+        let event = LogEvent {
+            timestamp: "2024-01-15T10:30:01.123".into(),
+            level: "ERROR".into(),
+            target: "daemon::tunnel".into(),
+            message: "connection refused".into(),
+        };
+        assert_eq!(
+            format_log_line(&event),
+            "10:30:01 ERROR [daemon::tunnel] connection refused"
+        );
     }
 }

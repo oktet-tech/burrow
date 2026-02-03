@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use iced::futures::SinkExt;
-use iced::widget::{column, container, text};
+use iced::widget::{column, container, text, text_editor};
 use iced::window;
 use iced::{Element, Length, Size, Subscription, Task};
 use serde_json::json;
@@ -67,6 +67,7 @@ pub enum Message {
     // User actions -- logs
     ClearLogs,
     ExportLogs,
+    LogEditorAction(text_editor::Action),
 
     // Action completions
     ActionDone,
@@ -86,6 +87,7 @@ pub struct BurrowApp {
 
     tunnels: Vec<TunnelInfo>,
     logs: Vec<LogEvent>,
+    log_content: text_editor::Content,
     daemon_connected: bool,
     client: Option<GuiIpcClient>,
     initial_fetch_done: bool,
@@ -114,6 +116,7 @@ impl BurrowApp {
 
                 tunnels: Vec::new(),
                 logs: Vec::new(),
+                log_content: text_editor::Content::new(),
                 daemon_connected: false,
                 client: None,
                 initial_fetch_done: false,
@@ -169,6 +172,7 @@ impl BurrowApp {
                     self.logs.remove(0);
                 }
                 self.logs.push(event);
+                self.rebuild_log_content();
                 Task::none()
             }
             // Tray menu dispatch
@@ -290,10 +294,18 @@ impl BurrowApp {
 
             Message::ClearLogs => {
                 self.logs.clear();
+                self.log_content = text_editor::Content::new();
                 Task::none()
             }
             Message::ExportLogs => {
                 export_logs(&self.logs);
+                Task::none()
+            }
+            Message::LogEditorAction(action) => {
+                // Read-only: allow selection and cursor movement, block edits
+                if !matches!(action, text_editor::Action::Edit(_)) {
+                    self.log_content.perform(action);
+                }
                 Task::none()
             }
             Message::ActionDone => Task::none(),
@@ -325,7 +337,7 @@ impl BurrowApp {
             column![
                 container(super::views::tunnel_list::view(&self.tunnels))
                     .height(Length::FillPortion(2)),
-                container(super::views::logs::view(&self.logs))
+                container(super::views::logs::view(&self.log_content, !self.logs.is_empty()))
                     .height(Length::FillPortion(1)),
             ]
             .height(Length::Fill)
@@ -541,6 +553,13 @@ impl BurrowApp {
             },
             Message::TunnelRemoved,
         )
+    }
+
+    fn rebuild_log_content(&mut self) {
+        let text = super::views::logs::build_log_text(&self.logs);
+        self.log_content = text_editor::Content::with_text(&text);
+        self.log_content
+            .perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
     }
 
     fn emit_tunnel_notifications(&mut self, new: &[TunnelInfo]) {
