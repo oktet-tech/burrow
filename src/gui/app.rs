@@ -9,9 +9,12 @@ use tray_icon::TrayIcon;
 
 use crate::ipc::protocol::{TunnelInfo, TunnelStatus};
 
-use super::ipc_client::{DaemonEvent, GuiIpcClient, LogEvent};
+use super::ipc_client::{DaemonEvent, GuiIpcClient, IpcError, LogEvent};
 use super::notifications;
 use super::tray::{self, AggregateStatus, TUNNEL_ID_PREFIX};
+use super::views::tunnel_form::{
+    self, FormField, ModeChoice, TunnelFormState, TunnelTypeChoice,
+};
 
 const MAX_LOG_LINES: usize = 1000;
 
@@ -44,6 +47,21 @@ pub enum Message {
     RestartAll,
     ReloadConfig,
 
+    // New tunnel form
+    ShowNewTunnelForm,
+    CancelNewTunnelForm,
+    SubmitNewTunnel,
+    FormFieldChanged(FormField, String),
+    FormTypeChanged(TunnelTypeChoice),
+    FormModeChanged(ModeChoice),
+    TunnelAdded(Result<(), String>),
+
+    // Delete tunnel
+    ConfirmDelete(String),
+    CancelDelete,
+    DeleteTunnel(String),
+    TunnelRemoved(Result<(), String>),
+
     // User actions -- logs
     ClearLogs,
     ExportLogs,
@@ -70,6 +88,11 @@ pub struct BurrowApp {
     client: Option<GuiIpcClient>,
     initial_fetch_done: bool,
     pending_user_disconnect: HashSet<String>,
+
+    show_new_tunnel_form: bool,
+    form_state: TunnelFormState,
+    form_error: Option<String>,
+    delete_confirming: Option<String>,
 }
 
 impl BurrowApp {
@@ -94,6 +117,11 @@ impl BurrowApp {
                 client: None,
                 initial_fetch_done: false,
                 pending_user_disconnect: HashSet::new(),
+
+                show_new_tunnel_form: false,
+                form_state: TunnelFormState::default(),
+                form_error: None,
+                delete_confirming: None,
             },
             Task::none(),
         )
@@ -192,6 +220,61 @@ impl BurrowApp {
             }
             Message::RestartAll => self.send_action("tunnel.restart_all", json!({})),
             Message::ReloadConfig => self.send_config_reload(),
+
+            // New tunnel form
+            Message::ShowNewTunnelForm => {
+                self.show_new_tunnel_form = true;
+                self.form_state = TunnelFormState::default();
+                self.form_error = None;
+                self.open_window()
+            }
+            Message::CancelNewTunnelForm => {
+                self.show_new_tunnel_form = false;
+                self.form_error = None;
+                Task::none()
+            }
+            Message::SubmitNewTunnel => self.submit_new_tunnel(),
+            Message::FormFieldChanged(field, value) => {
+                self.update_form_field(field, value);
+                Task::none()
+            }
+            Message::FormTypeChanged(t) => {
+                self.form_state.tunnel_type = t;
+                Task::none()
+            }
+            Message::FormModeChanged(m) => {
+                self.form_state.mode = m;
+                Task::none()
+            }
+            Message::TunnelAdded(Ok(())) => {
+                self.show_new_tunnel_form = false;
+                self.form_error = None;
+                Task::none()
+            }
+            Message::TunnelAdded(Err(msg)) => {
+                self.form_error = Some(msg);
+                Task::none()
+            }
+
+            // Delete tunnel
+            Message::ConfirmDelete(id) => {
+                self.delete_confirming = Some(id);
+                Task::none()
+            }
+            Message::CancelDelete => {
+                self.delete_confirming = None;
+                Task::none()
+            }
+            Message::DeleteTunnel(id) => {
+                self.delete_confirming = None;
+                self.send_tunnel_remove(&id)
+            }
+            Message::TunnelRemoved(Ok(())) => Task::none(),
+            Message::TunnelRemoved(Err(msg)) => {
+                tracing::error!(error = %msg, "tunnel remove failed");
+                Task::none()
+            }
+
             Message::ClearLogs => {
                 self.logs.clear();
                 Task::none()
@@ -223,12 +306,24 @@ impl BurrowApp {
             .into();
         }
 
-        column![
-            super::views::tunnel_list::view(&self.tunnels),
-            super::views::logs::view(&self.logs),
-        ]
-        .height(Length::Fill)
-        .into()
+        if self.show_new_tunnel_form {
+            column![
+                tunnel_form::view(&self.form_state, &self.form_error),
+                super::views::logs::view(&self.logs),
+            ]
+            .height(Length::Fill)
+            .into()
+        } else {
+            column![
+                super::views::tunnel_list::view(
+                    &self.tunnels,
+                    self.delete_confirming.as_deref(),
+                ),
+                super::views::logs::view(&self.logs),
+            ]
+            .height(Length::Fill)
+            .into()
+        }
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -269,6 +364,7 @@ impl BurrowApp {
     fn handle_tray_event(&mut self, id: &str) -> Task<Message> {
         match id {
             "open-window" => self.open_window(),
+            "new-tunnel" => self.update(Message::ShowNewTunnelForm),
             "quit" => self.quit(),
             "connect-all" => self.update(Message::ConnectAll),
             "disconnect-all" => self.update(Message::DisconnectAll),
@@ -353,6 +449,72 @@ impl BurrowApp {
                 let _ = client.request("config.reload", json!({})).await;
             },
             |()| Message::ConfigReloaded,
+        )
+    }
+
+    fn update_form_field(&mut self, field: FormField, value: String) {
+        match field {
+            FormField::Name => {
+                self.form_state.name = value.clone();
+                if !self.form_state.id_manually_edited {
+                    self.form_state.id = tunnel_form::slugify(&value);
+                }
+            }
+            FormField::Id => {
+                self.form_state.id_manually_edited = true;
+                self.form_state.id = value;
+            }
+            FormField::Host => self.form_state.host = value,
+            FormField::SshPort => self.form_state.ssh_port = value,
+            FormField::LocalPort => self.form_state.local_port = value,
+            FormField::RemoteHost => self.form_state.remote_host = value,
+            FormField::RemotePort => self.form_state.remote_port = value,
+            FormField::LocalHost => self.form_state.local_host = value,
+            FormField::RemoteBind => self.form_state.remote_bind = value,
+            FormField::Identity => self.form_state.identity = value,
+            FormField::JumpHost => self.form_state.jump_host = value,
+            FormField::JumpPort => self.form_state.jump_port = value,
+        }
+    }
+
+    fn submit_new_tunnel(&mut self) -> Task<Message> {
+        let Some(client) = self.client.clone() else {
+            return Task::none();
+        };
+        let id = self.form_state.id.clone();
+        let config_json = tunnel_form::build_config_json(&self.form_state);
+        Task::perform(
+            async move {
+                client
+                    .tunnel_add(&id, config_json)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| match e {
+                        IpcError::Rpc { message, .. } => message,
+                        other => other.to_string(),
+                    })
+            },
+            Message::TunnelAdded,
+        )
+    }
+
+    fn send_tunnel_remove(&self, tunnel_id: &str) -> Task<Message> {
+        let Some(client) = self.client.clone() else {
+            return Task::none();
+        };
+        let id = tunnel_id.to_string();
+        Task::perform(
+            async move {
+                client
+                    .tunnel_remove(&id, true)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| match e {
+                        IpcError::Rpc { message, .. } => message,
+                        other => other.to_string(),
+                    })
+            },
+            Message::TunnelRemoved,
         )
     }
 
