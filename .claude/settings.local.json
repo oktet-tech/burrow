@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo run:*)",
+      "Bash(lsof:*)",
+      "Bash(for f in src/cli/mod.rs src/cli/commands.rs src/main.rs src/config/schema.rs src/config/validation.rs src/config/mod.rs CLAUDE.md)",
+      "Bash(done)",
+      "Bash(git checkout:*)",
+      "WebSearch",
+      "WebFetch(domain:docs.rs)",
+      "Bash(B=/Users/kostik/prj/tools/burrow/target/debug/burrow)",
+      "Bash($B config validate)",
+      "Bash($B tunnel add on-demand-test --name \"On-Demand Test\" --host main --type local --local-port 19333 --remote-host localhost --remote-port 22 --mode on-demand)",
+      "Bash($B daemon start)",
+      "Bash($B status)",
+      "Bash(git status:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(git filter-branch:*)"
+    ]
+  }
+}
