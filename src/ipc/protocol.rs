@@ -51,6 +51,14 @@ impl RpcNotification {
             params: serde_json::to_value(line).expect("LogLine must serialize"),
         }
     }
+
+    pub fn tunnel_changed(tunnels: &[TunnelInfo]) -> Self {
+        Self {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            method: "tunnel.changed".to_string(),
+            params: serde_json::to_value(tunnels).expect("TunnelInfo must serialize"),
+        }
+    }
 }
 
 /// A structured log line, broadcast over IPC to subscribed clients.
@@ -184,6 +192,7 @@ pub enum Request {
     DaemonShutdown,
     ConfigReload,
     LogsSubscribe { last_n: u64 },
+    EventsSubscribe,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -239,6 +248,7 @@ impl Request {
                 let p: LogsSubscribeParams = serde_json::from_value(req.params.clone())?;
                 Ok(Self::LogsSubscribe { last_n: p.last_n })
             }
+            "events.subscribe" => Ok(Self::EventsSubscribe),
             other => Err(ProtocolError::UnknownMethod(other.to_string())),
         }
     }

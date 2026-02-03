@@ -80,11 +80,18 @@ async fn handle_connection(
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
     let mut log_rx: Option<tokio::sync::broadcast::Receiver<protocol::LogLine>> = None;
+    let mut event_rx: Option<tokio::sync::broadcast::Receiver<Vec<protocol::TunnelInfo>>> = None;
 
     loop {
-        // When not subscribed, the log branch uses pending() (never fires, zero cost).
+        // When not subscribed, these branches use pending() (never fires, zero cost).
         let log_recv = async {
             match log_rx.as_mut() {
+                Some(rx) => rx.recv().await,
+                None => std::future::pending().await,
+            }
+        };
+        let event_recv = async {
+            match event_rx.as_mut() {
                 Some(rx) => rx.recv().await,
                 None => std::future::pending().await,
             }
@@ -106,6 +113,13 @@ async fn handle_connection(
                                 write_notification(&mut writer, &RpcNotification::log_line(log_line)).await?;
                             }
                             log_rx = Some(broadcast.subscribe());
+                            RpcResponse::success(rpc_req.id, serde_json::json!({ "status": "subscribed" }))
+                        }
+                        Ok(Request::EventsSubscribe) => {
+                            // Send current state as initial notification, then subscribe
+                            let tunnels = mgr.list().await;
+                            write_notification(&mut writer, &RpcNotification::tunnel_changed(&tunnels)).await?;
+                            event_rx = Some(mgr.subscribe_events().await);
                             RpcResponse::success(rpc_req.id, serde_json::json!({ "status": "subscribed" }))
                         }
                         Ok(request) => {
@@ -149,6 +163,20 @@ async fn handle_connection(
                         log_rx = None;
                     }
                 }
+            }
+            event_result = event_recv => {
+                let tunnels = match event_result {
+                    Ok(tunnels) => tunnels,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // Intermediate states don't matter; re-fetch current state
+                        mgr.list().await
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        event_rx = None;
+                        continue;
+                    }
+                };
+                write_notification(&mut writer, &RpcNotification::tunnel_changed(&tunnels)).await?;
             }
         }
     }
@@ -246,7 +274,7 @@ async fn handle_request(
             Err(e) => RpcResponse::error(id, protocol::CONFIG_ERROR, e.to_string()),
         },
         // Handled in handle_connection before dispatching here
-        Request::LogsSubscribe { .. } => {
+        Request::LogsSubscribe { .. } | Request::EventsSubscribe => {
             RpcResponse::error(id, protocol::INTERNAL_ERROR, "unexpected dispatch")
         }
     }
