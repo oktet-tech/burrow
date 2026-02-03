@@ -289,6 +289,7 @@ impl Tunnel {
 
     /// Spawn SSH process, wait for it to exit, update status.
     /// Convenience method for standalone use; the manager uses start() + monitor instead.
+    #[allow(dead_code)]
     pub async fn spawn(&mut self) {
         let mut child = match self.start() {
             Ok(c) => c,

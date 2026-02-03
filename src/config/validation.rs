@@ -32,6 +32,7 @@ impl ValidationError {
     }
 
     /// Which config field this error relates to (None for section-level issues).
+    #[allow(dead_code)] // useful accessor for future error display
     pub fn field_name(&self) -> Option<&str> {
         match self {
             Self::InvalidTunnelId(_) => None,

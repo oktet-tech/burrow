@@ -47,6 +47,7 @@ enum ClientCmd {
         params: Value,
         reply: oneshot::Sender<Result<Value, IpcError>>,
     },
+    #[allow(dead_code)] // used once quit flow is wired
     Shutdown,
 }
 
@@ -105,6 +106,7 @@ impl GuiIpcClient {
     }
 
     /// Signal the background task to shut down.
+    #[allow(dead_code)] // used once quit flow is wired
     pub async fn shutdown(&self) {
         let _ = self.cmd_tx.send(ClientCmd::Shutdown).await;
     }
@@ -122,18 +124,21 @@ impl GuiIpcClient {
             .tunnels)
     }
 
+    #[allow(dead_code)] // GUI currently uses raw RPC; wrappers ready for Phase 4
     pub async fn tunnel_connect(&self, id: &str) -> Result<(), IpcError> {
         self.request("tunnel.connect", json!({ "id": id }))
             .await
             .map(|_| ())
     }
 
+    #[allow(dead_code)]
     pub async fn tunnel_disconnect(&self, id: &str) -> Result<(), IpcError> {
         self.request("tunnel.disconnect", json!({ "id": id }))
             .await
             .map(|_| ())
     }
 
+    #[allow(dead_code)]
     pub async fn daemon_status(&self) -> Result<DaemonInfo, IpcError> {
         self.request_typed("daemon.status", json!({})).await
     }
@@ -153,6 +158,7 @@ impl GuiIpcClient {
             .await
     }
 
+    #[allow(dead_code)]
     pub async fn config_reload(&self) -> Result<Value, IpcError> {
         self.request("config.reload", json!({})).await
     }

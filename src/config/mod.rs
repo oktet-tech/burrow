@@ -52,24 +52,6 @@ pub fn config_path() -> PathBuf {
     }
 }
 
-/// Platform-appropriate config directory (parent of config file).
-pub fn config_dir() -> PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        directories::BaseDirs::new()
-            .expect("cannot determine home directory")
-            .home_dir()
-            .join("Library/Application Support/Burrow")
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        directories::ProjectDirs::from("", "", "burrow")
-            .expect("cannot determine config directory")
-            .config_dir()
-            .to_path_buf()
-    }
-}
-
 /// Load and validate config from the default platform path.
 pub fn load_config() -> Result<Config, ConfigError> {
     load_config_from(&config_path())
