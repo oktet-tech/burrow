@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use std::fmt;
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 /// Top-level configuration file structure.
@@ -20,7 +20,7 @@ pub struct Config {
     #[serde(default)]
     pub defaults: Defaults,
     #[serde(default)]
-    pub tunnel: HashMap<String, TunnelConfig>,
+    pub tunnel: IndexMap<String, TunnelConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

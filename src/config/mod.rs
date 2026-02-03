@@ -207,9 +207,9 @@ identity = "~/.ssh/id_rsa"
     #[test]
     fn save_and_reload_roundtrip() {
         use crate::config::schema::{Defaults, TunnelConfig, TunnelMode, TunnelType};
-        use std::collections::HashMap;
+        use indexmap::IndexMap;
 
-        let mut tunnels = HashMap::new();
+        let mut tunnels = IndexMap::new();
         tunnels.insert(
             "dev-db".to_string(),
             TunnelConfig {

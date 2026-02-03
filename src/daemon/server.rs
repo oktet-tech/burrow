@@ -323,7 +323,7 @@ async fn handle_tunnel_add(
         Ok(c) => c,
         Err(crate::config::ConfigError::NotFound(_)) => crate::config::Config {
             defaults: crate::config::Defaults::default(),
-            tunnel: std::collections::HashMap::new(),
+            tunnel: indexmap::IndexMap::new(),
         },
         Err(e) => {
             return RpcResponse::error(req_id, protocol::CONFIG_ERROR, e.to_string());
@@ -439,7 +439,7 @@ async fn handle_tunnel_remove(
         let _ = mgr.disconnect(tunnel_id).await;
     }
 
-    cfg.tunnel.remove(tunnel_id);
+    cfg.tunnel.shift_remove(tunnel_id);
 
     if let Err(e) = crate::config::save_config(&cfg) {
         return RpcResponse::error(req_id, protocol::CONFIG_ERROR, e.to_string());

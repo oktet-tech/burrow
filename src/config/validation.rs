@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::config::schema::{Config, TunnelType};
@@ -82,8 +81,8 @@ pub fn validate_config(config: &Config) -> ValidationResult {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
-    let mut port_owners: HashMap<u16, &str> = HashMap::new();
-    let mut names_seen: HashMap<&str, &str> = HashMap::new();
+    let mut port_owners: std::collections::HashMap<u16, &str> = std::collections::HashMap::new();
+    let mut names_seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
 
     for (id, tunnel) in &config.tunnel {
         // Tunnel ID: lowercase alphanumeric + hyphens
@@ -246,7 +245,6 @@ fn home_dir() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::config::schema::{Config, Defaults, TunnelConfig, TunnelMode, TunnelType};
-    use std::collections::HashMap;
 
     fn local_tunnel(name: &str, port: u16) -> TunnelConfig {
         TunnelConfig {
@@ -274,7 +272,7 @@ mod tests {
             tunnel: tunnels
                 .into_iter()
                 .map(|(id, t)| (id.to_string(), t))
-                .collect(),
+                .collect::<indexmap::IndexMap<_, _>>(),
         }
     }
 

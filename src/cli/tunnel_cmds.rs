@@ -78,7 +78,7 @@ pub fn tunnel_remove(id: &str, force: bool) {
         let _ = send_rpc("tunnel.disconnect", json!({ "id": id }));
     }
 
-    config.tunnel.remove(id);
+    config.tunnel.shift_remove(id);
     save_or_exit(&config);
     println!("tunnel '{id}' removed");
     try_daemon_reload();

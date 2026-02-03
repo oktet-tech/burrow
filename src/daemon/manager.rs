@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use indexmap::IndexMap;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify};
 use tokio::task::JoinHandle;
 
@@ -35,7 +36,7 @@ struct ExitEvent {
 }
 
 struct Inner {
-    tunnels: HashMap<String, ManagedTunnel>,
+    tunnels: IndexMap<String, ManagedTunnel>,
     exit_tx: mpsc::UnboundedSender<ExitEvent>,
     state_dirty: Arc<Notify>,
     event_tx: broadcast::Sender<Vec<TunnelInfo>>,
@@ -113,7 +114,7 @@ impl TunnelManager {
         let state_dirty = Arc::new(Notify::new());
         let (event_tx, _) = broadcast::channel(64);
         let inner = Arc::new(Mutex::new(Inner {
-            tunnels: HashMap::new(),
+            tunnels: IndexMap::new(),
             exit_tx,
             state_dirty,
             event_tx,
@@ -452,16 +453,14 @@ impl TunnelManager {
         }
     }
 
-    /// Snapshot of all tunnels for IPC responses.
+    /// Snapshot of all tunnels for IPC responses. Order matches config file.
     pub async fn list(&self) -> Vec<TunnelInfo> {
         let state = self.inner.lock().await;
-        let mut infos: Vec<TunnelInfo> = state
+        state
             .tunnels
             .values()
             .map(|mt| mt.tunnel.to_info())
-            .collect();
-        infos.sort_by(|a, b| a.id.cmp(&b.id));
-        infos
+            .collect()
     }
 
     /// Snapshot of a single tunnel.
@@ -561,7 +560,7 @@ impl TunnelManager {
             }
 
             for id in &to_remove {
-                state.tunnels.remove(id);
+                state.tunnels.shift_remove(id);
                 result.removed.push(id.clone());
                 tracing::info!(tunnel_id = %id, "removed tunnel");
             }
@@ -575,6 +574,15 @@ impl TunnelManager {
                     mt.consecutive_failures = 0;
                     result.updated.push(id.clone());
                     tracing::info!(tunnel_id = %id, "updated tunnel config");
+                }
+            }
+
+            // Reorder tunnels to match new config file order
+            for (i, key) in config.tunnel.keys().enumerate() {
+                if let Some(current) = state.tunnels.get_index_of(key) {
+                    if current != i {
+                        state.tunnels.move_index(current, i);
+                    }
                 }
             }
 
@@ -821,7 +829,7 @@ mod tests {
     use crate::config::schema::{Defaults, TunnelConfig, TunnelMode, TunnelType};
 
     fn test_config() -> Config {
-        let mut tunnel = HashMap::new();
+        let mut tunnel = IndexMap::new();
         tunnel.insert(
             "dev-db".to_string(),
             TunnelConfig {
@@ -869,7 +877,7 @@ mod tests {
     }
 
     fn manual_config(ssh_binary: &str) -> Config {
-        let mut tunnel = HashMap::new();
+        let mut tunnel = IndexMap::new();
         tunnel.insert(
             "manual-tun".to_string(),
             TunnelConfig {
@@ -908,8 +916,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_returns_sorted() {
+    async fn list_preserves_config_order() {
         let mgr = TunnelManager::new();
+        // test_config inserts dev-db then proxy
         mgr.load_tunnels(&test_config()).await;
 
         let list = mgr.list().await;
