@@ -24,6 +24,10 @@ pub fn view(tunnels: &[TunnelInfo]) -> Element<'_, Message> {
             .on_press(Message::ShowNewTunnelForm)
             .style(button::primary)
             .padding([4, 12]),
+        button(text("Reload").size(13))
+            .on_press(Message::ReloadConfig)
+            .style(button::secondary)
+            .padding([4, 12]),
         button(text("Connect All").size(13))
             .on_press_maybe(has_tunnels.then_some(Message::ConnectAll))
             .style(button::secondary)
