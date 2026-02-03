@@ -93,6 +93,10 @@ pub fn build_menu(tunnels: &[TunnelInfo], daemon_connected: bool) -> Menu {
         }
     }
 
+    if daemon_connected {
+        let _ = menu.append(&MenuItem::with_id("new-tunnel", "New Tunnel...", true, None));
+    }
+
     let _ = menu.append(&PredefinedMenuItem::separator());
 
     let has_tunnels = daemon_connected && !tunnels.is_empty();
