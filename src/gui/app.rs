@@ -47,19 +47,21 @@ pub enum Message {
     RestartAll,
     ReloadConfig,
 
-    // New tunnel form
+    // Tunnel form (create + edit)
     ShowNewTunnelForm,
+    EditTunnel(String),
     CancelNewTunnelForm,
     SubmitNewTunnel,
     FormFieldChanged(FormField, String),
     FormTypeChanged(TunnelTypeChoice),
     FormModeChanged(ModeChoice),
     TunnelAdded(Result<(), String>),
+    TunnelUpdated(Result<(), String>),
 
-    // Delete tunnel
-    ConfirmDelete(String),
-    CancelDelete,
-    DeleteTunnel(String),
+    // Delete tunnel (from edit form)
+    FormConfirmDelete,
+    FormCancelDelete,
+    FormDeleteTunnel,
     TunnelRemoved(Result<(), String>),
 
     // User actions -- logs
@@ -92,7 +94,6 @@ pub struct BurrowApp {
     show_new_tunnel_form: bool,
     form_state: TunnelFormState,
     form_error: Option<String>,
-    delete_confirming: Option<String>,
 }
 
 impl BurrowApp {
@@ -121,7 +122,6 @@ impl BurrowApp {
                 show_new_tunnel_form: false,
                 form_state: TunnelFormState::default(),
                 form_error: None,
-                delete_confirming: None,
             },
             Task::none(),
         )
@@ -221,11 +221,19 @@ impl BurrowApp {
             Message::RestartAll => self.send_action("tunnel.restart_all", json!({})),
             Message::ReloadConfig => self.send_config_reload(),
 
-            // New tunnel form
+            // Tunnel form (create + edit)
             Message::ShowNewTunnelForm => {
                 self.show_new_tunnel_form = true;
                 self.form_state = TunnelFormState::default();
                 self.form_error = None;
+                self.open_window()
+            }
+            Message::EditTunnel(id) => {
+                if let Some(info) = self.tunnels.iter().find(|t| t.id == id) {
+                    self.show_new_tunnel_form = true;
+                    self.form_state = TunnelFormState::from_tunnel_info(info);
+                    self.form_error = None;
+                }
                 self.open_window()
             }
             Message::CancelNewTunnelForm => {
@@ -233,7 +241,7 @@ impl BurrowApp {
                 self.form_error = None;
                 Task::none()
             }
-            Message::SubmitNewTunnel => self.submit_new_tunnel(),
+            Message::SubmitNewTunnel => self.submit_tunnel(),
             Message::FormFieldChanged(field, value) => {
                 self.update_form_field(field, value);
                 Task::none()
@@ -246,28 +254,33 @@ impl BurrowApp {
                 self.form_state.mode = m;
                 Task::none()
             }
-            Message::TunnelAdded(Ok(())) => {
+            Message::TunnelAdded(Ok(())) | Message::TunnelUpdated(Ok(())) => {
                 self.show_new_tunnel_form = false;
                 self.form_error = None;
                 Task::none()
             }
-            Message::TunnelAdded(Err(msg)) => {
+            Message::TunnelAdded(Err(msg)) | Message::TunnelUpdated(Err(msg)) => {
                 self.form_error = Some(msg);
                 Task::none()
             }
 
-            // Delete tunnel
-            Message::ConfirmDelete(id) => {
-                self.delete_confirming = Some(id);
+            // Delete tunnel (from edit form)
+            Message::FormConfirmDelete => {
+                self.form_state.delete_confirming = true;
                 Task::none()
             }
-            Message::CancelDelete => {
-                self.delete_confirming = None;
+            Message::FormCancelDelete => {
+                self.form_state.delete_confirming = false;
                 Task::none()
             }
-            Message::DeleteTunnel(id) => {
-                self.delete_confirming = None;
-                self.send_tunnel_remove(&id)
+            Message::FormDeleteTunnel => {
+                if let Some(ref id) = self.form_state.editing_id {
+                    let task = self.send_tunnel_remove(id);
+                    self.show_new_tunnel_form = false;
+                    task
+                } else {
+                    Task::none()
+                }
             }
             Message::TunnelRemoved(Ok(())) => Task::none(),
             Message::TunnelRemoved(Err(msg)) => {
@@ -310,11 +323,8 @@ impl BurrowApp {
             tunnel_form::view(&self.form_state, &self.form_error)
         } else {
             column![
-                container(super::views::tunnel_list::view(
-                    &self.tunnels,
-                    self.delete_confirming.as_deref(),
-                ))
-                .height(Length::FillPortion(2)),
+                container(super::views::tunnel_list::view(&self.tunnels))
+                    .height(Length::FillPortion(2)),
                 container(super::views::logs::view(&self.logs))
                     .height(Length::FillPortion(1)),
             ]
@@ -474,25 +484,43 @@ impl BurrowApp {
         }
     }
 
-    fn submit_new_tunnel(&mut self) -> Task<Message> {
+    fn submit_tunnel(&mut self) -> Task<Message> {
         let Some(client) = self.client.clone() else {
             return Task::none();
         };
         let id = self.form_state.id.clone();
         let config_json = tunnel_form::build_config_json(&self.form_state);
-        Task::perform(
-            async move {
-                client
-                    .tunnel_add(&id, config_json)
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| match e {
-                        IpcError::Rpc { message, .. } => message,
-                        other => other.to_string(),
-                    })
-            },
-            Message::TunnelAdded,
-        )
+        let is_edit = self.form_state.editing_id.is_some();
+
+        if is_edit {
+            Task::perform(
+                async move {
+                    client
+                        .tunnel_update(&id, config_json)
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| match e {
+                            IpcError::Rpc { message, .. } => message,
+                            other => other.to_string(),
+                        })
+                },
+                Message::TunnelUpdated,
+            )
+        } else {
+            Task::perform(
+                async move {
+                    client
+                        .tunnel_add(&id, config_json)
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| match e {
+                            IpcError::Rpc { message, .. } => message,
+                            other => other.to_string(),
+                        })
+                },
+                Message::TunnelAdded,
+            )
+        }
     }
 
     fn send_tunnel_remove(&self, tunnel_id: &str) -> Task<Message> {

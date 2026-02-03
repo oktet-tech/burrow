@@ -193,6 +193,7 @@ pub enum Request {
     DaemonStatus,
     DaemonShutdown,
     TunnelAdd { id: String, config: Value },
+    TunnelUpdate { id: String, config: Value },
     TunnelRemove { id: String, force: bool },
     ConfigReload,
     LogsSubscribe { last_n: u64 },
@@ -258,6 +259,13 @@ impl Request {
             "tunnel.add" => {
                 let p: TunnelAddParams = serde_json::from_value(req.params.clone())?;
                 Ok(Self::TunnelAdd {
+                    id: p.id,
+                    config: p.config,
+                })
+            }
+            "tunnel.update" => {
+                let p: TunnelAddParams = serde_json::from_value(req.params.clone())?;
+                Ok(Self::TunnelUpdate {
                     id: p.id,
                     config: p.config,
                 })

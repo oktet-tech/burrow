@@ -7,6 +7,7 @@ use iced::{Center, Element, Font, Length};
 
 use crate::gui::app::Message;
 use crate::gui::style;
+use crate::ipc::protocol::TunnelInfo;
 
 const BOLD: Font = Font {
     weight: Weight::Bold,
@@ -17,6 +18,9 @@ const BOLD: Font = Font {
 
 #[derive(Debug, Clone)]
 pub struct TunnelFormState {
+    /// None = create mode, Some(id) = edit mode
+    pub editing_id: Option<String>,
+    pub delete_confirming: bool,
     pub name: String,
     pub id: String,
     pub id_manually_edited: bool,
@@ -40,6 +44,8 @@ pub struct TunnelFormState {
 impl Default for TunnelFormState {
     fn default() -> Self {
         Self {
+            editing_id: None,
+            delete_confirming: false,
             name: String::new(),
             id: String::new(),
             id_manually_edited: false,
@@ -50,6 +56,54 @@ impl Default for TunnelFormState {
             mode: ModeChoice::Auto,
             remote_host: "localhost".to_string(),
             remote_port: String::new(),
+            local_host: String::new(),
+            remote_bind: String::new(),
+            identity: String::new(),
+            jump_host: String::new(),
+            jump_port: String::new(),
+        }
+    }
+}
+
+impl TunnelFormState {
+    /// Populate form from an existing tunnel for editing.
+    pub fn from_tunnel_info(info: &TunnelInfo) -> Self {
+        let tunnel_type = match info.tunnel_type.as_str() {
+            "reverse" => TunnelTypeChoice::Reverse,
+            "socks" => TunnelTypeChoice::Socks,
+            _ => TunnelTypeChoice::Local,
+        };
+        let mode = match info.mode.as_str() {
+            "manual" => ModeChoice::Manual,
+            "on-demand" => ModeChoice::OnDemand,
+            _ => ModeChoice::Auto,
+        };
+
+        // Parse "host:port" from info.remote
+        let (remote_host, remote_port) = match info.remote.as_deref() {
+            Some(r) if tunnel_type != TunnelTypeChoice::Socks => {
+                if let Some((h, p)) = r.rsplit_once(':') {
+                    (h.to_string(), p.to_string())
+                } else {
+                    (r.to_string(), String::new())
+                }
+            }
+            _ => ("localhost".to_string(), String::new()),
+        };
+
+        Self {
+            editing_id: Some(info.id.clone()),
+            delete_confirming: false,
+            name: info.name.clone(),
+            id: info.id.clone(),
+            id_manually_edited: true,
+            host: info.host.clone(),
+            ssh_port: "22".to_string(), // not exposed in TunnelInfo
+            local_port: info.local_port.to_string(),
+            tunnel_type,
+            mode,
+            remote_host,
+            remote_port,
             local_host: String::new(),
             remote_bind: String::new(),
             identity: String::new(),
@@ -205,15 +259,19 @@ pub fn build_config_json(state: &TunnelFormState) -> serde_json::Value {
 // -- View --
 
 pub fn view<'a>(state: &'a TunnelFormState, error: &'a Option<String>) -> Element<'a, Message> {
+    let is_edit = state.editing_id.is_some();
+    let title = if is_edit { "Edit Tunnel" } else { "New Tunnel" };
+    let submit_label = if is_edit { "Save" } else { "Create" };
+
     let header = row![
         button(text("Cancel").size(13))
             .on_press(Message::CancelNewTunnelForm)
             .style(button::secondary)
             .padding([4, 12]),
         horizontal_space(),
-        text("New Tunnel").size(18).font(BOLD),
+        text(title).size(18).font(BOLD),
         horizontal_space(),
-        button(text("Create").size(13))
+        button(text(submit_label).size(13))
             .on_press(Message::SubmitNewTunnel)
             .style(button::primary)
             .padding([4, 12]),
@@ -231,12 +289,19 @@ pub fn view<'a>(state: &'a TunnelFormState, error: &'a Option<String>) -> Elemen
             .size(14)
             .into(),
     ));
+
+    // ID field: read-only when editing
+    let id_input = if is_edit {
+        text_input("my-database-tunnel", &state.id).size(14)
+    } else {
+        text_input("my-database-tunnel", &state.id)
+            .on_input(|v| Message::FormFieldChanged(FormField::Id, v))
+            .size(14)
+    };
     form = form.push(field_row(
         "ID",
         column![
-            text_input("my-database-tunnel", &state.id)
-                .on_input(|v| Message::FormFieldChanged(FormField::Id, v))
-                .size(14),
+            id_input,
             text("Lowercase alphanumeric with hyphens")
                 .size(11)
                 .color(style::MUTED),
@@ -387,6 +452,36 @@ pub fn view<'a>(state: &'a TunnelFormState, error: &'a Option<String>) -> Elemen
         ]
         .spacing(12),
     );
+
+    // Delete section (edit mode only)
+    if is_edit {
+        form = form.push(horizontal_rule(1));
+        if state.delete_confirming {
+            form = form.push(
+                row![
+                    text("Delete this tunnel?").size(14),
+                    horizontal_space(),
+                    button(text("Cancel").size(13))
+                        .on_press(Message::FormCancelDelete)
+                        .style(button::secondary)
+                        .padding([4, 12]),
+                    button(text("Delete").size(13))
+                        .on_press(Message::FormDeleteTunnel)
+                        .style(button::danger)
+                        .padding([4, 12]),
+                ]
+                .spacing(8)
+                .align_y(Center),
+            );
+        } else {
+            form = form.push(
+                button(text("Delete Tunnel").size(13).color(style::ERROR))
+                    .on_press(Message::FormConfirmDelete)
+                    .style(button::text)
+                    .padding([4, 12]),
+            );
+        }
+    }
 
     // Error display
     if let Some(err) = error {

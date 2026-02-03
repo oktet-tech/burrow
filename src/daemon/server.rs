@@ -268,6 +268,10 @@ async fn handle_request(
             id: tid,
             config: config_json,
         } => handle_tunnel_add(id, &tid, config_json, mgr).await,
+        Request::TunnelUpdate {
+            id: tid,
+            config: config_json,
+        } => handle_tunnel_update(id, &tid, config_json, mgr).await,
         Request::TunnelRemove {
             id: tid,
             force,
@@ -354,6 +358,60 @@ async fn handle_tunnel_add(
     let reload = mgr.reload_config(&cfg).await;
     tracing::info!(tunnel_id = %tunnel_id, "tunnel added via IPC");
     RpcResponse::success(req_id, json!({ "status": "added", "reload": reload }))
+}
+
+async fn handle_tunnel_update(
+    req_id: u64,
+    tunnel_id: &str,
+    config_json: Value,
+    mgr: &TunnelManager,
+) -> RpcResponse {
+    let tunnel_config: TunnelConfig = match serde_json::from_value(config_json) {
+        Ok(c) => c,
+        Err(e) => {
+            return RpcResponse::error(
+                req_id,
+                protocol::VALIDATION_ERROR,
+                format!("invalid tunnel config: {e}"),
+            );
+        }
+    };
+
+    let mut cfg = match crate::config::load_config() {
+        Ok(c) => c,
+        Err(e) => {
+            return RpcResponse::error(req_id, protocol::CONFIG_ERROR, e.to_string());
+        }
+    };
+
+    if !cfg.tunnel.contains_key(tunnel_id) {
+        return RpcResponse::error(
+            req_id,
+            protocol::TUNNEL_NOT_FOUND,
+            format!("tunnel '{tunnel_id}' not found"),
+        );
+    }
+
+    cfg.tunnel.insert(tunnel_id.to_string(), tunnel_config);
+
+    let result = crate::config::validate_config(&cfg);
+    if !result.is_ok() {
+        let msg = result
+            .errors
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return RpcResponse::error(req_id, protocol::VALIDATION_ERROR, msg);
+    }
+
+    if let Err(e) = crate::config::save_config(&cfg) {
+        return RpcResponse::error(req_id, protocol::CONFIG_ERROR, e.to_string());
+    }
+
+    let reload = mgr.reload_config(&cfg).await;
+    tracing::info!(tunnel_id = %tunnel_id, "tunnel updated via IPC");
+    RpcResponse::success(req_id, json!({ "status": "updated", "reload": reload }))
 }
 
 async fn handle_tunnel_remove(

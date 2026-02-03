@@ -143,6 +143,11 @@ impl GuiIpcClient {
             .await
     }
 
+    pub async fn tunnel_update(&self, id: &str, config: Value) -> Result<Value, IpcError> {
+        self.request("tunnel.update", json!({ "id": id, "config": config }))
+            .await
+    }
+
     pub async fn tunnel_remove(&self, id: &str, force: bool) -> Result<Value, IpcError> {
         self.request("tunnel.remove", json!({ "id": id, "force": force }))
             .await
