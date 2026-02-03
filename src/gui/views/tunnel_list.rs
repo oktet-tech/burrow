@@ -107,12 +107,10 @@ fn tunnel_row(t: &TunnelInfo) -> Element<'_, Message> {
         .style(button::secondary)
         .padding([2, 8]);
 
-    let left = column![
-        container(toggle).center_x(Length::Fill),
-        container(edit_btn).center_x(Length::Fill),
-    ]
-    .spacing(4)
-    .width(48);
+    let left = column![toggle, edit_btn]
+        .spacing(4)
+        .align_x(Center)
+        .width(Length::Shrink);
 
     row![left, status_dot, right]
         .spacing(8)
