@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{broadcast, mpsc, Mutex, Notify};
 use tokio::task::JoinHandle;
 
 use crate::config::schema::{Config, TunnelMode};
@@ -38,7 +38,22 @@ struct Inner {
     tunnels: HashMap<String, ManagedTunnel>,
     exit_tx: mpsc::UnboundedSender<ExitEvent>,
     state_dirty: Arc<Notify>,
+    event_tx: broadcast::Sender<Vec<TunnelInfo>>,
     daemon_started: String,
+}
+
+impl Inner {
+    /// Notify state persistence and broadcast a tunnel snapshot to GUI subscribers.
+    fn notify_changed(&self) {
+        self.state_dirty.notify_one();
+        let snapshot: Vec<TunnelInfo> = self
+            .tunnels
+            .values()
+            .map(|mt| mt.tunnel.to_info())
+            .collect();
+        // Ignore send errors -- no subscribers is fine
+        let _ = self.event_tx.send(snapshot);
+    }
 }
 
 /// Manages all tunnel lifecycles. Cheaply cloneable (Arc wrapper).
@@ -96,10 +111,12 @@ impl TunnelManager {
     pub fn new() -> Self {
         let (exit_tx, exit_rx) = mpsc::unbounded_channel();
         let state_dirty = Arc::new(Notify::new());
+        let (event_tx, _) = broadcast::channel(64);
         let inner = Arc::new(Mutex::new(Inner {
             tunnels: HashMap::new(),
             exit_tx,
             state_dirty,
+            event_tx,
             daemon_started: chrono::Utc::now().to_rfc3339(),
         }));
 
@@ -145,7 +162,7 @@ impl TunnelManager {
         mt.stub_handle = None;
 
         let result = start_tunnel(mt, &exit_tx);
-        state.state_dirty.notify_one();
+        state.notify_changed();
         result
     }
 
@@ -166,7 +183,7 @@ impl TunnelManager {
 
         mt.consecutive_failures = 0;
         mt.tunnel.record_disconnect();
-        state.state_dirty.notify_one();
+        state.notify_changed();
         Ok(())
     }
 
@@ -174,7 +191,6 @@ impl TunnelManager {
     pub async fn enable(&self, id: &str) -> Result<(), String> {
         let mode = {
             let mut state = self.inner.lock().await;
-            let state_dirty = state.state_dirty.clone();
             let mt = state
                 .tunnels
                 .get_mut(id)
@@ -185,7 +201,7 @@ impl TunnelManager {
             }
             mt.tunnel.enabled = true;
             let mode = mt.tunnel.config().mode;
-            state_dirty.notify_one();
+            state.notify_changed();
             mode
         };
 
@@ -216,7 +232,7 @@ impl TunnelManager {
             mt.stub_handle = None;
             let active = mt.tunnel.status == TunnelStatus::Connected
                 || mt.tunnel.status == TunnelStatus::Connecting;
-            state.state_dirty.notify_one();
+            state.notify_changed();
             active
         };
 
@@ -247,7 +263,7 @@ impl TunnelManager {
             mt.stub_handle = None;
 
             let result = start_tunnel(mt, &exit_tx);
-            state.state_dirty.notify_one();
+            state.notify_changed();
             result
         };
 
@@ -454,6 +470,11 @@ impl TunnelManager {
         state.tunnels.get(id).map(|mt| mt.tunnel.to_info())
     }
 
+    /// Subscribe to tunnel state change events for push-based GUI updates.
+    pub async fn subscribe_events(&self) -> broadcast::Receiver<Vec<TunnelInfo>> {
+        self.inner.lock().await.event_tx.subscribe()
+    }
+
     pub async fn tunnel_count(&self) -> usize {
         self.inner.lock().await.tunnels.len()
     }
@@ -557,7 +578,7 @@ impl TunnelManager {
                 }
             }
 
-            state.state_dirty.notify_one();
+            state.notify_changed();
         }
 
         // Phase 4: reconnect tunnels that were connected before the update
@@ -684,17 +705,15 @@ impl TunnelManager {
             while let Some(event) = exit_rx.recv().await {
                 let needs_stub = {
                     let mut state = inner.lock().await;
-                    let state_dirty = state.state_dirty.clone();
                     let Some(mt) = state.tunnels.get_mut(&event.id) else {
                         continue;
                     };
 
                     mt.monitor = None;
                     mt.tunnel.record_exit(event.code, event.stderr);
-                    state_dirty.notify_one();
 
                     // Auto-mode: schedule reconnect with backoff
-                    if mt.tunnel.should_reconnect() {
+                    let result = if mt.tunnel.should_reconnect() {
                         mt.consecutive_failures += 1;
                         let delay = backoff_delay(mt.consecutive_failures);
 
@@ -719,7 +738,10 @@ impl TunnelManager {
                         mt.tunnel.config().mode == TunnelMode::OnDemand
                             && mt.tunnel.enabled
                             && mt.stub_handle.is_none()
-                    }
+                    };
+
+                    state.notify_changed();
+                    result
                 }; // lock released
 
                 if needs_stub {
