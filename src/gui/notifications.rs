@@ -1,31 +1,73 @@
-// On macOS, notify-rust uses mac-notification-sys which swizzles
-// NSBundle.bundleIdentifier globally. This corrupts winit/iced's view
-// of the process identity and causes crashes when opening windows.
-// Use osascript instead -- no swizzle, no FFI conflicts.
+// On macOS, notify-rust swizzles NSBundle.bundleIdentifier which corrupts
+// winit/iced, and osascript intermittently opens Script Editor.
+// Use NSUserNotificationCenter via raw objc FFI (same pattern as hide_from_dock).
 
 #[cfg(target_os = "macos")]
 fn send(title: &str, body: &str) {
-    use std::process::Command;
-
-    // AppleScript: display notification "body" with title "title"
-    let script = if body.is_empty() {
-        format!("display notification \"\" with title \"{}\"", escape(title))
-    } else {
-        format!(
-            "display notification \"{}\" with title \"{}\"",
-            escape(body),
-            escape(title),
-        )
-    };
+    let title = title.to_owned();
+    let body = body.to_owned();
 
     std::thread::spawn(move || {
-        let _ = Command::new("osascript").arg("-e").arg(&script).output();
+        send_native(&title, &body);
     });
 }
 
 #[cfg(target_os = "macos")]
-fn escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+fn send_native(title: &str, body: &str) {
+    type Obj = *mut std::ffi::c_void;
+    type Sel = *mut std::ffi::c_void;
+
+    unsafe extern "C" {
+        fn objc_getClass(name: *const i8) -> Obj;
+        fn sel_registerName(name: *const i8) -> Sel;
+        fn objc_msgSend();
+    }
+
+    type SendNoArgs = unsafe extern "C" fn(Obj, Sel) -> Obj;
+    type SendObj = unsafe extern "C" fn(Obj, Sel, Obj) -> Obj;
+    type SendPtr = unsafe extern "C" fn(Obj, Sel, *const i8) -> Obj;
+
+    unsafe {
+        let send0: SendNoArgs = std::mem::transmute(objc_msgSend as *const ());
+        let send_obj: SendObj = std::mem::transmute(objc_msgSend as *const ());
+        let send_ptr: SendPtr = std::mem::transmute(objc_msgSend as *const ());
+
+        let cls_str = objc_getClass(c"NSString".as_ptr());
+        let sel_utf8 = sel_registerName(c"stringWithUTF8String:".as_ptr());
+        let make_nsstring = |s: &str| -> Obj {
+            let cstr = std::ffi::CString::new(s).unwrap_or_default();
+            send_ptr(cls_str, sel_utf8, cstr.as_ptr())
+        };
+
+        // [[NSUserNotification alloc] init]
+        let cls_notif = objc_getClass(c"NSUserNotification".as_ptr());
+        let sel_alloc = sel_registerName(c"alloc".as_ptr());
+        let sel_init = sel_registerName(c"init".as_ptr());
+        let notif = send0(send0(cls_notif, sel_alloc), sel_init);
+        if notif.is_null() {
+            return;
+        }
+
+        // setTitle:
+        let sel_set_title = sel_registerName(c"setTitle:".as_ptr());
+        send_obj(notif, sel_set_title, make_nsstring(title));
+
+        // setInformativeText:
+        if !body.is_empty() {
+            let sel_set_text = sel_registerName(c"setInformativeText:".as_ptr());
+            send_obj(notif, sel_set_text, make_nsstring(body));
+        }
+
+        // [[NSUserNotificationCenter defaultUserNotificationCenter] deliverNotification:]
+        let cls_center = objc_getClass(c"NSUserNotificationCenter".as_ptr());
+        let sel_default = sel_registerName(c"defaultUserNotificationCenter".as_ptr());
+        let center = send0(cls_center, sel_default);
+        if center.is_null() {
+            return;
+        }
+        let sel_deliver = sel_registerName(c"deliverNotification:".as_ptr());
+        send_obj(center, sel_deliver, notif);
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
