@@ -322,7 +322,7 @@ pub fn view<'a>(state: &'a TunnelFormState, error: &'a Option<String>) -> Elemen
             ),
             field_col(
                 "SSH Port",
-                text_input("22", &state.ssh_port)
+                text_input("auto", &state.ssh_port)
                     .on_input(|v| Message::FormFieldChanged(FormField::SshPort, v))
                     .size(14)
                     .width(80)
@@ -443,7 +443,7 @@ pub fn view<'a>(state: &'a TunnelFormState, error: &'a Option<String>) -> Elemen
             ),
             field_col(
                 "Jump Port",
-                text_input("22", &state.jump_port)
+                text_input("auto", &state.jump_port)
                     .on_input(|v| Message::FormFieldChanged(FormField::JumpPort, v))
                     .size(14)
                     .width(80)
