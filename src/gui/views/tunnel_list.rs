@@ -82,7 +82,7 @@ fn tunnel_row(t: &TunnelInfo) -> Element<'_, Message> {
     .spacing(8)
     .align_y(Center);
 
-    // Line 2: host + detail + action button + edit button
+    // Line 2: host + detail + action button
     let line2 = row![
         text(&t.host).size(13).color(port_color),
         horizontal_space(),
@@ -90,10 +90,6 @@ fn tunnel_row(t: &TunnelInfo) -> Element<'_, Message> {
             .size(13)
             .color(detail_color(t)),
         action_button(t),
-        button(text("Edit").size(13))
-            .on_press(Message::EditTunnel(t.id.clone()))
-            .style(button::secondary)
-            .padding([4, 8]),
     ]
     .spacing(8)
     .align_y(Center);
@@ -105,7 +101,14 @@ fn tunnel_row(t: &TunnelInfo) -> Element<'_, Message> {
         .on_toggle(move |val| Message::ToggleEnabled(id.clone(), val))
         .size(18.0);
 
-    row![toggle, status_dot, right]
+    let edit_btn = button(text("Edit").size(11))
+        .on_press(Message::EditTunnel(t.id.clone()))
+        .style(button::secondary)
+        .padding([2, 8]);
+
+    let left = column![toggle, edit_btn].spacing(4).align_x(Center);
+
+    row![left, status_dot, right]
         .spacing(8)
         .width(Length::Fill)
         .padding([4, 0])
