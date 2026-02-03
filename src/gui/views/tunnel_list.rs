@@ -106,7 +106,10 @@ fn tunnel_row(t: &TunnelInfo) -> Element<'_, Message> {
         .style(button::secondary)
         .padding([2, 8]);
 
-    let left = column![toggle, edit_btn].spacing(4).align_x(Center);
+    let left = column![toggle, edit_btn]
+        .spacing(4)
+        .align_x(Center)
+        .width(48);
 
     row![left, status_dot, right]
         .spacing(8)
