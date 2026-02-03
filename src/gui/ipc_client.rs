@@ -30,6 +30,7 @@ pub enum DaemonEvent {
     Connected,
     Disconnected(String),
     LogLine(LogEvent),
+    TunnelsChanged(Vec<TunnelInfo>),
 }
 
 #[derive(Debug, Clone)]
@@ -212,8 +213,14 @@ async fn run_session(
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value, IpcError>>> = HashMap::new();
     let mut next_id: u64 = 1;
 
-    // Auto-subscribe to log stream after connecting
+    // Auto-subscribe to log stream and tunnel events after connecting
     if send_request(&mut writer, &mut next_id, "logs.subscribe", json!({ "last_n": 512 }))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    if send_request(&mut writer, &mut next_id, "events.subscribe", json!({}))
         .await
         .is_err()
     {
@@ -290,16 +297,24 @@ fn dispatch_line(
     // Notifications have no "id" field
     if raw.get("id").is_none() {
         if let Ok(notif) = serde_json::from_value::<RpcNotification>(raw) {
-            if notif.method == "log.line" {
-                if let Ok(log_line) = serde_json::from_value::<LogLine>(notif.params) {
-                    let ev = LogEvent {
-                        timestamp: log_line.timestamp,
-                        level: log_line.level,
-                        target: log_line.target,
-                        message: log_line.message,
-                    };
-                    let _ = event_tx.try_send(DaemonEvent::LogLine(ev));
+            match notif.method.as_str() {
+                "log.line" => {
+                    if let Ok(log_line) = serde_json::from_value::<LogLine>(notif.params) {
+                        let ev = LogEvent {
+                            timestamp: log_line.timestamp,
+                            level: log_line.level,
+                            target: log_line.target,
+                            message: log_line.message,
+                        };
+                        let _ = event_tx.try_send(DaemonEvent::LogLine(ev));
+                    }
                 }
+                "tunnel.changed" => {
+                    if let Ok(tunnels) = serde_json::from_value::<Vec<TunnelInfo>>(notif.params) {
+                        let _ = event_tx.try_send(DaemonEvent::TunnelsChanged(tunnels));
+                    }
+                }
+                _ => {}
             }
         }
         return;

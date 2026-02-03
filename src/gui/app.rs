@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
 
 use iced::futures::SinkExt;
 use iced::widget::{column, container, text};
@@ -15,7 +14,6 @@ use super::notifications;
 use super::tray::{self, AggregateStatus, TUNNEL_ID_PREFIX};
 
 const MAX_LOG_LINES: usize = 1000;
-const STATUS_POLL_SECS: u64 = 2;
 
 // -- Messages --
 
@@ -28,7 +26,6 @@ pub enum Message {
     DaemonDisconnected(String),
     TunnelStatusUpdate(Vec<TunnelInfo>),
     LogReceived(LogEvent),
-    Tick,
 
     // Tray menu
     TrayMenuEvent(String),
@@ -146,14 +143,6 @@ impl BurrowApp {
                 self.logs.push(event);
                 Task::none()
             }
-            Message::Tick => {
-                if self.daemon_connected {
-                    self.fetch_tunnels()
-                } else {
-                    Task::none()
-                }
-            }
-
             // Tray menu dispatch
             Message::TrayMenuEvent(id) => self.handle_tray_event(&id),
 
@@ -211,10 +200,10 @@ impl BurrowApp {
                 export_logs(&self.logs);
                 Task::none()
             }
-            Message::ActionDone => self.fetch_tunnels(),
+            Message::ActionDone => Task::none(),
             Message::ConfigReloaded => {
                 notifications::config_reloaded();
-                self.fetch_tunnels()
+                Task::none()
             }
         }
     }
@@ -452,28 +441,15 @@ fn ipc_subscription() -> impl iced::futures::Stream<Item = Message> {
             return;
         }
 
-        let mut poll = tokio::time::interval(Duration::from_secs(STATUS_POLL_SECS));
-
-        loop {
-            tokio::select! {
-                event = event_rx.recv() => {
-                    let msg = match event {
-                        Some(DaemonEvent::Connected) => Message::DaemonConnected,
-                        Some(DaemonEvent::Disconnected(r)) => {
-                            Message::DaemonDisconnected(r)
-                        }
-                        Some(DaemonEvent::LogLine(ev)) => Message::LogReceived(ev),
-                        None => break,
-                    };
-                    if output.send(msg).await.is_err() {
-                        break;
-                    }
-                }
-                _ = poll.tick() => {
-                    if output.send(Message::Tick).await.is_err() {
-                        break;
-                    }
-                }
+        while let Some(event) = event_rx.recv().await {
+            let msg = match event {
+                DaemonEvent::Connected => Message::DaemonConnected,
+                DaemonEvent::Disconnected(r) => Message::DaemonDisconnected(r),
+                DaemonEvent::LogLine(ev) => Message::LogReceived(ev),
+                DaemonEvent::TunnelsChanged(tunnels) => Message::TunnelStatusUpdate(tunnels),
+            };
+            if output.send(msg).await.is_err() {
+                break;
             }
         }
     })
