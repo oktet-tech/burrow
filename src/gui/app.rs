@@ -484,19 +484,22 @@ fn ipc_subscription() -> impl iced::futures::Stream<Item = Message> {
 fn tray_event_subscription() -> impl iced::futures::Stream<Item = Message> {
     iced::stream::channel(32, |mut output| async move {
         let rx = tray::menu_event_receiver();
-        loop {
-            // Poll the tray menu event receiver periodically.
-            // MenuEvent::receiver() is a crossbeam channel, not async.
-            match rx.try_recv() {
-                Ok(event) => {
-                    let id = event.id.as_ref().to_string();
-                    if output.send(Message::TrayMenuEvent(id)).await.is_err() {
-                        break;
-                    }
+
+        // Bridge crossbeam blocking recv to async via a dedicated thread.
+        // Using std::thread (not spawn_blocking) because this blocks
+        // indefinitely and would permanently consume a threadpool slot.
+        let (async_tx, mut async_rx) = tokio::sync::mpsc::channel::<String>(32);
+        std::thread::spawn(move || {
+            while let Ok(event) = rx.recv() {
+                if async_tx.blocking_send(event.id.as_ref().to_string()).is_err() {
+                    break;
                 }
-                Err(_) => {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
+            }
+        });
+
+        while let Some(id) = async_rx.recv().await {
+            if output.send(Message::TrayMenuEvent(id)).await.is_err() {
+                break;
             }
         }
     })
