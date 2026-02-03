@@ -14,12 +14,19 @@ const BOLD: Font = Font {
 };
 
 /// Tunnel list panel: header with bulk actions, then one two-line row per tunnel.
-pub fn view<'a>(tunnels: &'a [TunnelInfo]) -> Element<'a, Message> {
+pub fn view<'a>(
+    tunnels: &'a [TunnelInfo],
+    delete_confirming: Option<&'a str>,
+) -> Element<'a, Message> {
     let has_tunnels = !tunnels.is_empty();
 
     let header = row![
         text("Tunnels").size(18).font(BOLD),
         horizontal_space(),
+        button(text("+ New").size(13))
+            .on_press(Message::ShowNewTunnelForm)
+            .style(button::primary)
+            .padding([4, 12]),
         button(text("Connect All").size(13))
             .on_press_maybe(has_tunnels.then_some(Message::ConnectAll))
             .style(button::secondary)
@@ -42,7 +49,8 @@ pub fn view<'a>(tunnels: &'a [TunnelInfo]) -> Element<'a, Message> {
         );
     } else {
         for tunnel in tunnels {
-            content = content.push(tunnel_row(tunnel));
+            let confirming = delete_confirming == Some(tunnel.id.as_str());
+            content = content.push(tunnel_row(tunnel, confirming));
             content = content.push(horizontal_rule(1));
         }
     }
@@ -55,8 +63,12 @@ pub fn view<'a>(tunnels: &'a [TunnelInfo]) -> Element<'a, Message> {
 
 /// Two-line tunnel row:
 ///   [dot] Name                    localhost:port -> remote
-///         host       uptime/error/mode           [Button]
-fn tunnel_row<'a>(t: &'a TunnelInfo) -> Element<'a, Message> {
+///         host       uptime/error/mode           [Button] [x]
+fn tunnel_row<'a>(t: &'a TunnelInfo, confirming: bool) -> Element<'a, Message> {
+    if confirming {
+        return delete_confirmation_row(t);
+    }
+
     let enabled = t.enabled;
     let (dot, dot_color) = status_indicator(t);
 
@@ -74,7 +86,7 @@ fn tunnel_row<'a>(t: &'a TunnelInfo) -> Element<'a, Message> {
     .spacing(8)
     .align_y(Center);
 
-    // Line 2: host + detail + action button
+    // Line 2: host + detail + action button + delete button
     let line2 = row![
         text(&t.host).size(13).color(port_color),
         horizontal_space(),
@@ -82,6 +94,10 @@ fn tunnel_row<'a>(t: &'a TunnelInfo) -> Element<'a, Message> {
             .size(13)
             .color(detail_color(t)),
         action_button(t),
+        button(text("\u{00D7}").size(14).color(style::MUTED))
+            .on_press(Message::ConfirmDelete(t.id.clone()))
+            .style(button::text)
+            .padding([2, 6]),
     ]
     .spacing(8)
     .align_y(Center);
@@ -98,6 +114,26 @@ fn tunnel_row<'a>(t: &'a TunnelInfo) -> Element<'a, Message> {
         .width(Length::Fill)
         .padding([4, 0])
         .into()
+}
+
+fn delete_confirmation_row<'a>(t: &'a TunnelInfo) -> Element<'a, Message> {
+    row![
+        text(format!("Delete '{}'?", t.name)).size(14),
+        horizontal_space(),
+        button(text("Cancel").size(13))
+            .on_press(Message::CancelDelete)
+            .style(button::secondary)
+            .padding([4, 12]),
+        button(text("Delete").size(13))
+            .on_press(Message::DeleteTunnel(t.id.clone()))
+            .style(button::danger)
+            .padding([4, 12]),
+    ]
+    .spacing(8)
+    .align_y(Center)
+    .width(Length::Fill)
+    .padding([8, 0])
+    .into()
 }
 
 // -- Helpers --
