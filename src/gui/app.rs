@@ -307,19 +307,16 @@ impl BurrowApp {
         }
 
         if self.show_new_tunnel_form {
-            column![
-                tunnel_form::view(&self.form_state, &self.form_error),
-                super::views::logs::view(&self.logs),
-            ]
-            .height(Length::Fill)
-            .into()
+            tunnel_form::view(&self.form_state, &self.form_error)
         } else {
             column![
-                super::views::tunnel_list::view(
+                container(super::views::tunnel_list::view(
                     &self.tunnels,
                     self.delete_confirming.as_deref(),
-                ),
-                super::views::logs::view(&self.logs),
+                ))
+                .height(Length::FillPortion(2)),
+                container(super::views::logs::view(&self.logs))
+                    .height(Length::FillPortion(1)),
             ]
             .height(Length::Fill)
             .into()
