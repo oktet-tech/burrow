@@ -107,6 +107,8 @@ pub const TUNNEL_NOT_FOUND: i32 = -32000;
 pub const TUNNEL_ALREADY_CONNECTED: i32 = -32001;
 pub const TUNNEL_NOT_CONNECTED: i32 = -32002;
 pub const CONFIG_ERROR: i32 = -32003;
+pub const TUNNEL_ALREADY_EXISTS: i32 = -32004;
+pub const VALIDATION_ERROR: i32 = -32005;
 
 // -- Domain types (shared between requests and responses) --
 
@@ -190,6 +192,8 @@ pub enum Request {
     TunnelRestartAll,
     DaemonStatus,
     DaemonShutdown,
+    TunnelAdd { id: String, config: Value },
+    TunnelRemove { id: String, force: bool },
     ConfigReload,
     LogsSubscribe { last_n: u64 },
     EventsSubscribe,
@@ -206,6 +210,19 @@ pub enum ProtocolError {
 #[derive(Debug, Deserialize)]
 struct TunnelIdParams {
     id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TunnelAddParams {
+    id: String,
+    config: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct TunnelRemoveParams {
+    id: String,
+    #[serde(default)]
+    force: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -238,6 +255,20 @@ impl Request {
             "tunnel.disable" => Ok(Self::TunnelDisable {
                 id: parse_tunnel_id(&req.params)?,
             }),
+            "tunnel.add" => {
+                let p: TunnelAddParams = serde_json::from_value(req.params.clone())?;
+                Ok(Self::TunnelAdd {
+                    id: p.id,
+                    config: p.config,
+                })
+            }
+            "tunnel.remove" => {
+                let p: TunnelRemoveParams = serde_json::from_value(req.params.clone())?;
+                Ok(Self::TunnelRemove {
+                    id: p.id,
+                    force: p.force,
+                })
+            }
             "tunnel.connect_all" => Ok(Self::TunnelConnectAll),
             "tunnel.disconnect_all" => Ok(Self::TunnelDisconnectAll),
             "tunnel.restart_all" => Ok(Self::TunnelRestartAll),
