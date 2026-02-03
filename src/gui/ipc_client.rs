@@ -138,6 +138,16 @@ impl GuiIpcClient {
         self.request_typed("daemon.status", json!({})).await
     }
 
+    pub async fn tunnel_add(&self, id: &str, config: Value) -> Result<Value, IpcError> {
+        self.request("tunnel.add", json!({ "id": id, "config": config }))
+            .await
+    }
+
+    pub async fn tunnel_remove(&self, id: &str, force: bool) -> Result<Value, IpcError> {
+        self.request("tunnel.remove", json!({ "id": id, "force": force }))
+            .await
+    }
+
     pub async fn config_reload(&self) -> Result<Value, IpcError> {
         self.request("config.reload", json!({})).await
     }
