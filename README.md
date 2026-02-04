@@ -14,13 +14,11 @@ SSH tunnel manager for macOS and Linux. Runs as a background daemon with auto-re
 
 ## Install
 
-Build from source (requires Rust toolchain):
+Requires a [Rust toolchain](https://rustup.rs/).
 
 ```bash
-cargo build --release
+cargo install --path .
 ```
-
-The binary is at `target/release/burrow`. Add it to your `$PATH`.
 
 ### macOS .app bundle
 
