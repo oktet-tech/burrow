@@ -245,10 +245,12 @@ impl TunnelManager {
 
     /// Called by the stub listener when an on-demand connection arrives.
     /// The stub has already dropped its listener to free the port.
+    /// `held_stream` is None for HTTP requests (browser will poll), Some for
+    /// non-HTTP clients that need hold-and-proxy.
     pub async fn handle_on_demand(
         &self,
         id: &str,
-        held_stream: tokio::net::TcpStream,
+        held_stream: Option<tokio::net::TcpStream>,
         local_port: u16,
     ) {
         let connect_result = {
@@ -270,10 +272,12 @@ impl TunnelManager {
 
         match connect_result {
             Ok(()) => {
-                let tunnel_id = id.to_string();
-                tokio::spawn(async move {
-                    stub::wait_and_proxy(held_stream, local_port, &tunnel_id).await;
-                });
+                if let Some(stream) = held_stream {
+                    let tunnel_id = id.to_string();
+                    tokio::spawn(async move {
+                        stub::wait_and_proxy(stream, local_port, &tunnel_id).await;
+                    });
+                }
             }
             Err(e) => {
                 tracing::error!(tunnel_id = %id, error = %e, "failed to start on-demand tunnel");
