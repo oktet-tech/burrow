@@ -159,6 +159,9 @@ impl TunnelManager {
             handle.abort();
         }
 
+        // Reset backoff so user gets a fresh start
+        mt.consecutive_failures = 0;
+
         // Stop stub listener if active (frees port for SSH)
         mt.stub_handle = None;
 
