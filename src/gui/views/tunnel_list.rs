@@ -1,6 +1,6 @@
 use iced::font::Weight;
 use iced::widget::{
-    button, column, container, horizontal_rule, horizontal_space, row, text, toggler,
+    button, column, container, horizontal_rule, horizontal_space, row, scrollable, text, toggler,
 };
 use iced::{Center, Color, Element, Font, Length};
 
@@ -40,24 +40,32 @@ pub fn view(tunnels: &[TunnelInfo]) -> Element<'_, Message> {
     .spacing(8)
     .align_y(Center);
 
-    let mut content = column![header, horizontal_rule(1)].spacing(8);
+    let mut tunnel_rows = column![].spacing(8);
 
     if tunnels.is_empty() {
-        content = content.push(
+        tunnel_rows = tunnel_rows.push(
             text("No tunnels configured")
                 .size(14)
                 .color(style::MUTED),
         );
     } else {
         for tunnel in tunnels {
-            content = content.push(tunnel_row(tunnel));
-            content = content.push(horizontal_rule(1));
+            tunnel_rows = tunnel_rows.push(tunnel_row(tunnel));
+            tunnel_rows = tunnel_rows.push(horizontal_rule(1));
         }
     }
+
+    let content = column![
+        header,
+        horizontal_rule(1),
+        scrollable(tunnel_rows).height(Length::Fill)
+    ]
+    .spacing(8);
 
     container(content)
         .padding(16)
         .width(Length::Fill)
+        .height(Length::Fill)
         .into()
 }
 
