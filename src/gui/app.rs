@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use iced::futures::SinkExt;
 use iced::widget::{column, container, text, text_editor};
@@ -17,6 +18,7 @@ use super::views::tunnel_form::{
 };
 
 const MAX_LOG_LINES: usize = 1000;
+const ERROR_NOTIFICATION_COOLDOWN_SECS: u64 = 60;
 
 // -- Messages --
 
@@ -96,6 +98,9 @@ pub struct BurrowApp {
     show_new_tunnel_form: bool,
     form_state: TunnelFormState,
     form_error: Option<String>,
+
+    /// Cooldown for error notifications to avoid flooding user during repeated failures.
+    error_notification_cooldown: HashMap<String, Instant>,
 }
 
 impl BurrowApp {
@@ -125,6 +130,8 @@ impl BurrowApp {
                 show_new_tunnel_form: false,
                 form_state: TunnelFormState::default(),
                 form_error: None,
+
+                error_notification_cooldown: HashMap::new(),
             },
             Task::none(),
         )
@@ -568,6 +575,8 @@ impl BurrowApp {
             .iter()
             .map(|t| (t.id.as_str(), &t.status))
             .collect();
+        let now = Instant::now();
+        let cooldown = std::time::Duration::from_secs(ERROR_NOTIFICATION_COOLDOWN_SECS);
 
         for t in new {
             let prev = old.get(t.id.as_str()).copied();
@@ -576,8 +585,18 @@ impl BurrowApp {
                     notifications::tunnel_connected(&t.name);
                 }
                 (TunnelStatus::Error, Some(s)) if *s != TunnelStatus::Error => {
-                    let error = t.last_error.as_deref().unwrap_or("unknown error");
-                    notifications::tunnel_error(&t.name, error);
+                    // Rate-limit error notifications to avoid flooding during repeated failures
+                    let should_notify = self
+                        .error_notification_cooldown
+                        .get(&t.id)
+                        .map(|last| now.duration_since(*last) >= cooldown)
+                        .unwrap_or(true);
+
+                    if should_notify {
+                        let error = t.last_error.as_deref().unwrap_or("unknown error");
+                        notifications::tunnel_error(&t.name, error);
+                        self.error_notification_cooldown.insert(t.id.clone(), now);
+                    }
                 }
                 (TunnelStatus::Disconnected, Some(TunnelStatus::Connected)) => {
                     if self.pending_user_disconnect.remove(&t.id) {
@@ -590,9 +609,12 @@ impl BurrowApp {
             }
         }
 
+        // Clean up cooldown entries for removed tunnels
         let current_ids: HashSet<&str> = new.iter().map(|t| t.id.as_str()).collect();
         self.pending_user_disconnect
             .retain(|id| current_ids.contains(id.as_str()));
+        self.error_notification_cooldown
+            .retain(|id, _| current_ids.contains(id.as_str()));
     }
 }
 
