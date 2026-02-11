@@ -38,6 +38,7 @@ pub enum Message {
     // Window lifecycle
     WindowOpened(window::Id),
     WindowCloseRequested(window::Id),
+    WindowClosed(window::Id),
     Quit,
 
     // User actions -- tunnels
@@ -191,12 +192,19 @@ impl BurrowApp {
                 Task::none()
             }
             Message::WindowCloseRequested(id) => {
+                tracing::debug!(?id, "window close requested");
                 if self.window_id == Some(id) {
-                    self.window_id = None;
                     window::close(id)
                 } else {
                     Task::none()
                 }
+            }
+            Message::WindowClosed(id) => {
+                tracing::debug!(?id, "window closed");
+                if self.window_id == Some(id) {
+                    self.window_id = None;
+                }
+                Task::none()
             }
             Message::Quit => self.quit(),
 
@@ -325,6 +333,7 @@ impl BurrowApp {
 
     pub fn view(&self, id: window::Id) -> Element<'_, Message> {
         if self.window_id != Some(id) {
+            tracing::trace!(?id, window_id = ?self.window_id, "view called for unknown window");
             return container(text("")).into();
         }
 
@@ -342,10 +351,8 @@ impl BurrowApp {
             tunnel_form::view(&self.form_state, &self.form_error)
         } else {
             column![
-                container(super::views::tunnel_list::view(&self.tunnels))
-                    .height(Length::FillPortion(2)),
-                container(super::views::logs::view(&self.log_content, !self.logs.is_empty()))
-                    .height(Length::FillPortion(1)),
+                super::views::tunnel_list::view(&self.tunnels),
+                super::views::logs::view(&self.log_content, !self.logs.is_empty()),
             ]
             .height(Length::Fill)
             .into()
@@ -357,6 +364,7 @@ impl BurrowApp {
             Subscription::run(ipc_subscription),
             Subscription::run(tray_event_subscription),
             window::close_requests().map(Message::WindowCloseRequested),
+            window::close_events().map(Message::WindowClosed),
         ])
     }
 
@@ -388,6 +396,7 @@ impl BurrowApp {
     // -- Tray menu event handling --
 
     fn handle_tray_event(&mut self, id: &str) -> Task<Message> {
+        tracing::debug!(%id, window_id = ?self.window_id, "tray event");
         match id {
             "open-window" => self.open_window(),
             "new-tunnel" => self.update(Message::ShowNewTunnelForm),
@@ -417,16 +426,24 @@ impl BurrowApp {
         #[cfg(target_os = "macos")]
         super::activate_app();
 
-        if let Some(id) = self.window_id {
-            return window::gain_focus(id);
-        }
+        // Close existing window if any, then open fresh
+        let close_task = if let Some(old_id) = self.window_id.take() {
+            tracing::debug!(?old_id, "closing stale window");
+            window::close(old_id)
+        } else {
+            Task::none()
+        };
 
         let (id, open) = window::open(window::Settings {
             size: Size::new(800.0, 600.0),
             ..Default::default()
         });
         self.window_id = Some(id);
-        open.map(Message::WindowOpened)
+        tracing::debug!(?id, "opening window");
+
+        close_task
+            .chain(open.discard())
+            .chain(window::gain_focus(id))
     }
 
     fn quit(&self) -> Task<Message> {
