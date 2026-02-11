@@ -10,18 +10,16 @@ const MAX_ROTATED: u32 = 5;
 /// macOS: ~/Library/Logs/Burrow/burrow.log
 /// Linux: ~/.local/state/burrow/burrow.log
 pub fn log_path() -> PathBuf {
+    let home = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf());
+
     #[cfg(target_os = "macos")]
     {
-        directories::BaseDirs::new()
-            .expect("cannot determine home directory")
-            .home_dir()
+        home.unwrap_or_else(|| PathBuf::from("/tmp"))
             .join("Library/Logs/Burrow/burrow.log")
     }
     #[cfg(not(target_os = "macos"))]
     {
-        directories::BaseDirs::new()
-            .expect("cannot determine home directory")
-            .home_dir()
+        home.unwrap_or_else(|| PathBuf::from("/tmp"))
             .join(".local/state/burrow/burrow.log")
     }
 }
