@@ -61,7 +61,10 @@ fn main() {
             ConfigCommand::Validate => cli::commands::config_validate(),
             ConfigCommand::Reload => cli::commands::config_reload(),
         },
-        Some(Commands::Gui) => gui::launch(),
+        Some(Commands::Gui) => {
+            common::logging::init_logging(None);
+            gui::launch()
+        }
         Some(Commands::DaemonForeground) => run_daemon_foreground(),
         Some(Commands::Daemon { command }) => match command {
             DaemonCommand::Start => cli::commands::daemon_start(),
@@ -74,7 +77,9 @@ fn main() {
             ServiceCommand::Uninstall => cli::service::service_uninstall(),
         },
         None => {
-            println!("No command specified. Use 'burrow --help' for usage.");
+            // Default to GUI when run without arguments (e.g., from macOS bundle)
+            common::logging::init_logging(None);
+            gui::launch()
         }
     }
 }
