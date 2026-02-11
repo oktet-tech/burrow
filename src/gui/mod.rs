@@ -85,9 +85,19 @@ mod macos {
         fn objc_msgSend();
     }
 
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct NSRect {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    }
+
     type SendNoArgs = unsafe extern "C" fn(Obj, Sel) -> Obj;
     type SendI64 = unsafe extern "C" fn(Obj, Sel, i64) -> Obj;
     type SendBool = unsafe extern "C" fn(Obj, Sel, bool) -> ();
+    type SendNoArgsRect = unsafe extern "C" fn(Obj, Sel) -> NSRect;
 
     fn shared_app() -> Obj {
         unsafe {
@@ -116,7 +126,31 @@ mod macos {
             send(shared_app(), sel, true);
         }
     }
+
+    /// Get the main screen dimensions (width, height).
+    pub fn main_screen_size() -> (f64, f64) {
+        unsafe {
+            let cls = objc_getClass(c"NSScreen".as_ptr());
+            let sel_main = sel_registerName(c"mainScreen".as_ptr());
+            let sel_frame = sel_registerName(c"frame".as_ptr());
+
+            let send_obj: SendNoArgs = std::mem::transmute(objc_msgSend as *const ());
+            let send_rect: SendNoArgsRect = std::mem::transmute(objc_msgSend as *const ());
+
+            let screen = send_obj(cls, sel_main);
+            if screen.is_null() {
+                return (1920.0, 1080.0); // fallback
+            }
+            let frame = send_rect(screen, sel_frame);
+            (frame.width, frame.height)
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
-pub(super) use macos::{activate_app, hide_from_dock};
+pub(super) use macos::{activate_app, hide_from_dock, main_screen_size};
+
+#[cfg(not(target_os = "macos"))]
+pub(super) fn main_screen_size() -> (f64, f64) {
+    (1920.0, 1080.0) // fallback for non-macOS
+}
