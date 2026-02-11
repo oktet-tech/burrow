@@ -434,8 +434,10 @@ impl BurrowApp {
             Task::none()
         };
 
+        let (_, screen_height) = super::main_screen_size();
+        let win_height = (screen_height * 0.75) as f32;
         let (id, open) = window::open(window::Settings {
-            size: Size::new(800.0, 600.0),
+            size: Size::new(800.0, win_height),
             ..Default::default()
         });
         self.window_id = Some(id);
