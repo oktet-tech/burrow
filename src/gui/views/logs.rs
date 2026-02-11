@@ -40,10 +40,10 @@ pub fn view<'a>(content: &'a text_editor::Content, has_logs: bool) -> Element<'a
         .on_action(Message::LogEditorAction)
         .height(Length::Fill);
 
-    container(column![header, horizontal_rule(1), editor].spacing(8))
+    container(column![header, horizontal_rule(1), editor].spacing(8).height(Length::Fill))
         .padding(16)
         .width(Length::Fill)
-        .height(Length::Fill)
+        .height(Length::FillPortion(1))
         .into()
 }
 

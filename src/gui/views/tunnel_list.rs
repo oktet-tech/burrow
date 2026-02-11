@@ -55,18 +55,19 @@ pub fn view(tunnels: &[TunnelInfo]) -> Element<'_, Message> {
         }
     }
 
-    let content = column![
-        header,
-        horizontal_rule(1),
-        scrollable(tunnel_rows).height(Length::Fill)
-    ]
-    .spacing(8);
-
-    container(content)
-        .padding(16)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    container(
+        column![
+            header,
+            horizontal_rule(1),
+            scrollable(tunnel_rows).height(Length::Fill)
+        ]
+        .spacing(8)
+        .height(Length::Fill),
+    )
+    .padding(16)
+    .width(Length::Fill)
+    .height(Length::FillPortion(2))
+    .into()
 }
 
 /// Two-line tunnel row:
