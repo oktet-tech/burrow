@@ -13,6 +13,7 @@ mkdir -p "$BUNDLE_DIR/Resources"
 
 cp target/release/burrow "$BUNDLE_DIR/MacOS/burrow"
 cp resources/Info.plist "$BUNDLE_DIR/Info.plist"
+cp resources/AppIcon.icns "$BUNDLE_DIR/Resources/AppIcon.icns"
 
 echo "Created target/release/bundle/Burrow.app"
 echo ""
