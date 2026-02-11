@@ -72,10 +72,10 @@ fn wait_for_socket(socket: &std::path::Path, timeout: Duration) -> bool {
     false
 }
 
-/// Set macOS activation policy to Accessory so the app appears only
-/// in the menu bar, not the Dock or Cmd-Tab switcher.
+// -- macOS helpers (raw objc calls to avoid objc2 dep) --
+
 #[cfg(target_os = "macos")]
-pub(super) fn hide_from_dock() {
+mod macos {
     type Obj = *mut std::ffi::c_void;
     type Sel = *mut std::ffi::c_void;
 
@@ -87,17 +87,36 @@ pub(super) fn hide_from_dock() {
 
     type SendNoArgs = unsafe extern "C" fn(Obj, Sel) -> Obj;
     type SendI64 = unsafe extern "C" fn(Obj, Sel, i64) -> Obj;
+    type SendBool = unsafe extern "C" fn(Obj, Sel, bool) -> ();
 
-    unsafe {
-        let cls = objc_getClass(c"NSApplication".as_ptr());
-        let sel_shared = sel_registerName(c"sharedApplication".as_ptr());
-        let sel_policy = sel_registerName(c"setActivationPolicy:".as_ptr());
+    fn shared_app() -> Obj {
+        unsafe {
+            let cls = objc_getClass(c"NSApplication".as_ptr());
+            let sel = sel_registerName(c"sharedApplication".as_ptr());
+            let send: SendNoArgs = std::mem::transmute(objc_msgSend as *const ());
+            send(cls, sel)
+        }
+    }
 
-        let send0: SendNoArgs = std::mem::transmute(objc_msgSend as *const ());
-        let send1: SendI64 = std::mem::transmute(objc_msgSend as *const ());
+    /// Set activation policy to Accessory (menu bar only, no Dock/Cmd-Tab).
+    pub fn hide_from_dock() {
+        unsafe {
+            let sel = sel_registerName(c"setActivationPolicy:".as_ptr());
+            let send: SendI64 = std::mem::transmute(objc_msgSend as *const ());
+            // NSApplicationActivationPolicyAccessory = 1
+            send(shared_app(), sel, 1);
+        }
+    }
 
-        let app = send0(cls, sel_shared);
-        // NSApplicationActivationPolicyAccessory = 1
-        send1(app, sel_policy, 1);
+    /// Bring the app to the foreground.
+    pub fn activate_app() {
+        unsafe {
+            let sel = sel_registerName(c"activateIgnoringOtherApps:".as_ptr());
+            let send: SendBool = std::mem::transmute(objc_msgSend as *const ());
+            send(shared_app(), sel, true);
+        }
     }
 }
+
+#[cfg(target_os = "macos")]
+pub(super) use macos::{activate_app, hide_from_dock};

@@ -414,6 +414,9 @@ impl BurrowApp {
     // -- Window management --
 
     fn open_window(&mut self) -> Task<Message> {
+        #[cfg(target_os = "macos")]
+        super::activate_app();
+
         if let Some(id) = self.window_id {
             return window::gain_focus(id);
         }
