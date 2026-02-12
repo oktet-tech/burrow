@@ -39,6 +39,7 @@ pub enum Message {
     WindowOpened(window::Id),
     WindowCloseRequested(window::Id),
     WindowClosed(window::Id),
+    NotificationClicked,
     Quit,
 
     // User actions -- tunnels
@@ -110,6 +111,7 @@ impl BurrowApp {
         #[cfg(target_os = "macos")]
         super::hide_from_dock();
 
+        notifications::init();
         let tray = tray::create_tray();
 
         (
@@ -206,6 +208,7 @@ impl BurrowApp {
                 }
                 Task::none()
             }
+            Message::NotificationClicked => self.open_window(),
             Message::Quit => self.quit(),
 
             // Tunnel actions
@@ -363,6 +366,7 @@ impl BurrowApp {
         Subscription::batch([
             Subscription::run(ipc_subscription),
             Subscription::run(tray_event_subscription),
+            Subscription::run(notification_click_subscription),
             window::close_requests().map(Message::WindowCloseRequested),
             window::close_events().map(Message::WindowClosed),
         ])
@@ -699,6 +703,33 @@ fn ipc_subscription() -> impl iced::futures::Stream<Item = Message> {
                 DaemonEvent::TunnelsChanged(tunnels) => Message::TunnelStatusUpdate(tunnels),
             };
             if output.send(msg).await.is_err() {
+                break;
+            }
+        }
+    })
+}
+
+// -- Notification click subscription --
+
+fn notification_click_subscription() -> impl iced::futures::Stream<Item = Message> {
+    iced::stream::channel(8, |mut output| async move {
+        let Some(rx) = notifications::take_click_receiver() else {
+            // Already consumed or init() not called; park forever.
+            std::future::pending::<()>().await;
+            return;
+        };
+
+        let (async_tx, mut async_rx) = tokio::sync::mpsc::channel::<()>(8);
+        std::thread::spawn(move || {
+            while rx.recv().is_ok() {
+                if async_tx.blocking_send(()).is_err() {
+                    break;
+                }
+            }
+        });
+
+        while async_rx.recv().await.is_some() {
+            if output.send(Message::NotificationClicked).await.is_err() {
                 break;
             }
         }
