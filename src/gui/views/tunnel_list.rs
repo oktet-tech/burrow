@@ -1,6 +1,6 @@
 use iced::font::Weight;
 use iced::widget::{
-    button, column, container, horizontal_rule, horizontal_space, row, scrollable, text, toggler,
+    button, column, container, row, rule, scrollable, space, text, toggler,
 };
 use iced::{Center, Color, Element, Font, Length};
 
@@ -19,7 +19,7 @@ pub fn view(tunnels: &[TunnelInfo]) -> Element<'_, Message> {
 
     let header = row![
         text("Tunnels").size(18).font(BOLD),
-        horizontal_space(),
+        space::horizontal(),
         button(text("+ New").size(13))
             .on_press(Message::ShowNewTunnelForm)
             .style(button::primary)
@@ -51,14 +51,14 @@ pub fn view(tunnels: &[TunnelInfo]) -> Element<'_, Message> {
     } else {
         for tunnel in tunnels {
             tunnel_rows = tunnel_rows.push(tunnel_row(tunnel));
-            tunnel_rows = tunnel_rows.push(horizontal_rule(1));
+            tunnel_rows = tunnel_rows.push(rule::horizontal(1));
         }
     }
 
     container(
         column![
             header,
-            horizontal_rule(1),
+            rule::horizontal(1),
             scrollable(tunnel_rows).height(Length::Fill)
         ]
         .spacing(8)
@@ -89,7 +89,7 @@ fn tunnel_row(t: &TunnelInfo) -> Element<'_, Message> {
     };
     let line1 = row![
         name_text,
-        horizontal_space(),
+        space::horizontal(),
         text(port_mapping(t)).size(14).color(port_color),
     ]
     .spacing(8)
@@ -98,7 +98,7 @@ fn tunnel_row(t: &TunnelInfo) -> Element<'_, Message> {
     // Line 2: host + detail + action button
     let line2 = row![
         text(&t.host).size(13).color(port_color),
-        horizontal_space(),
+        space::horizontal(),
         text(status_detail(t))
             .size(13)
             .color(detail_color(t)),
@@ -195,7 +195,7 @@ fn detail_color(t: &TunnelInfo) -> Color {
 
 fn action_button(t: &TunnelInfo) -> Element<'_, Message> {
     if !t.enabled {
-        return horizontal_space().width(0).into();
+        return space::horizontal().width(0).into();
     }
     match t.status {
         TunnelStatus::Connected => button(text("Disconnect").size(13))

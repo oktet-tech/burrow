@@ -688,7 +688,7 @@ fn tray_relevant_eq(a: &[TunnelInfo], b: &[TunnelInfo]) -> bool {
 // -- IPC subscription --
 
 fn ipc_subscription() -> impl iced::futures::Stream<Item = Message> {
-    iced::stream::channel(100, |mut output| async move {
+    iced::stream::channel(100, async |mut output| {
         let (client, mut event_rx) = GuiIpcClient::spawn();
 
         if output.send(Message::IpcReady(client)).await.is_err() {
@@ -712,7 +712,7 @@ fn ipc_subscription() -> impl iced::futures::Stream<Item = Message> {
 // -- Notification click subscription --
 
 fn notification_click_subscription() -> impl iced::futures::Stream<Item = Message> {
-    iced::stream::channel(8, |mut output| async move {
+    iced::stream::channel(8, async |mut output| {
         let Some(rx) = notifications::take_click_receiver() else {
             // Already consumed or init() not called; park forever.
             std::future::pending::<()>().await;
@@ -739,7 +739,7 @@ fn notification_click_subscription() -> impl iced::futures::Stream<Item = Messag
 // -- Tray event subscription --
 
 fn tray_event_subscription() -> impl iced::futures::Stream<Item = Message> {
-    iced::stream::channel(32, |mut output| async move {
+    iced::stream::channel(32, async |mut output| {
         let rx = tray::menu_event_receiver();
 
         // Bridge crossbeam blocking recv to async via a dedicated thread.
