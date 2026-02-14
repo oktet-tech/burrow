@@ -18,9 +18,10 @@ pub fn launch() {
     // Tray and hide_from_dock happen inside new(), after iced has
     // initialized NSApplication. Creating NSApplication ourselves first
     // (via raw objc_msgSend) conflicts with winit/objc2's initialization.
-    iced::daemon(BurrowApp::title, BurrowApp::update, BurrowApp::view)
+    iced::daemon(BurrowApp::new, BurrowApp::update, BurrowApp::view)
+        .title(BurrowApp::title)
         .subscription(BurrowApp::subscription)
-        .run_with(BurrowApp::new)
+        .run()
         .expect("iced daemon failed");
 }
 

@@ -1,6 +1,6 @@
 use iced::font::Weight;
 use iced::widget::{
-    button, column, container, horizontal_rule, horizontal_space, pick_list, row, scrollable, text,
+    button, column, container, pick_list, row, rule, scrollable, space, text,
     text_input,
 };
 use iced::{Center, Element, Font, Length};
@@ -268,9 +268,9 @@ pub fn view<'a>(state: &'a TunnelFormState, error: &'a Option<String>) -> Elemen
             .on_press(Message::CancelNewTunnelForm)
             .style(button::secondary)
             .padding([4, 12]),
-        horizontal_space(),
+        space::horizontal(),
         text(title).size(18).font(BOLD),
-        horizontal_space(),
+        space::horizontal(),
         button(text(submit_label).size(13))
             .on_press(Message::SubmitNewTunnel)
             .style(button::primary)
@@ -279,7 +279,7 @@ pub fn view<'a>(state: &'a TunnelFormState, error: &'a Option<String>) -> Elemen
     .spacing(8)
     .align_y(Center);
 
-    let mut form = column![header, horizontal_rule(1)].spacing(10);
+    let mut form = column![header, rule::horizontal(1)].spacing(10);
 
     // Name + ID
     form = form.push(field_row(
@@ -422,7 +422,7 @@ pub fn view<'a>(state: &'a TunnelFormState, error: &'a Option<String>) -> Elemen
     }
 
     // Optional SSH section
-    form = form.push(horizontal_rule(1));
+    form = form.push(rule::horizontal(1));
     form = form.push(text("SSH Options (optional)").size(14).color(style::MUTED));
 
     form = form.push(field_row(
@@ -455,12 +455,12 @@ pub fn view<'a>(state: &'a TunnelFormState, error: &'a Option<String>) -> Elemen
 
     // Delete section (edit mode only)
     if is_edit {
-        form = form.push(horizontal_rule(1));
+        form = form.push(rule::horizontal(1));
         if state.delete_confirming {
             form = form.push(
                 row![
                     text("Delete this tunnel?").size(14),
-                    horizontal_space(),
+                    space::horizontal(),
                     button(text("Cancel").size(13))
                         .on_press(Message::FormCancelDelete)
                         .style(button::secondary)
@@ -485,7 +485,7 @@ pub fn view<'a>(state: &'a TunnelFormState, error: &'a Option<String>) -> Elemen
 
     // Error display
     if let Some(err) = error {
-        form = form.push(horizontal_rule(1));
+        form = form.push(rule::horizontal(1));
         form = form.push(text(err).size(13).color(style::ERROR));
     }
 

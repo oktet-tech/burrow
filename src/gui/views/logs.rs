@@ -1,6 +1,6 @@
 use iced::font::Weight;
 use iced::widget::{
-    button, column, container, horizontal_rule, horizontal_space, row, text, text_editor,
+    button, column, container, row, rule, space, text, text_editor,
 };
 use iced::{Center, Element, Font, Length};
 
@@ -21,7 +21,7 @@ const MONO: Font = Font {
 pub fn view<'a>(content: &'a text_editor::Content, has_logs: bool) -> Element<'a, Message> {
     let header = row![
         text("Logs").size(18).font(BOLD),
-        horizontal_space(),
+        space::horizontal(),
         button(text("Clear").size(13))
             .on_press_maybe(has_logs.then_some(Message::ClearLogs))
             .style(button::secondary)
@@ -40,7 +40,7 @@ pub fn view<'a>(content: &'a text_editor::Content, has_logs: bool) -> Element<'a
         .on_action(Message::LogEditorAction)
         .height(Length::Fill);
 
-    container(column![header, horizontal_rule(1), editor].spacing(8).height(Length::Fill))
+    container(column![header, rule::horizontal(1), editor].spacing(8).height(Length::Fill))
         .padding(16)
         .width(Length::Fill)
         .height(Length::FillPortion(1))
