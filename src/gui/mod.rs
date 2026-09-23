@@ -103,6 +103,12 @@ mod macos {
             0
         }
 
+        // BOOL is `bool` ("B") on arm64 and `signed char` ("c") on x86_64.
+        #[cfg(target_arch = "aarch64")]
+        const REOPEN_TYPES: &std::ffi::CStr = c"B@:@B";
+        #[cfg(not(target_arch = "aarch64"))]
+        const REOPEN_TYPES: &std::ffi::CStr = c"c@:@c";
+
         unsafe {
             let send: SendNoArgs = std::mem::transmute(objc_msgSend as *const ());
             let set_obj: SendObj = std::mem::transmute(objc_msgSend as *const ());
@@ -120,7 +126,7 @@ mod macos {
                 object_getClass(delegate),
                 sel_reopen,
                 should_handle_reopen as *const (),
-                c"c@:@c".as_ptr(),
+                REOPEN_TYPES.as_ptr(),
             );
             if added == 0 {
                 tracing::warn!("delegate already handles reopen, Dock hook not installed");
