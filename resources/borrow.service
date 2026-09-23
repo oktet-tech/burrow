@@ -6,7 +6,7 @@ After=network-online.target
 Type=simple
 ExecStart={{EXE_PATH}} daemon-foreground
 Restart=on-failure
-RestartSec=5
+RestartSec=30
 
 [Install]
 WantedBy=default.target

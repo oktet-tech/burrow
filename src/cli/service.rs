@@ -79,6 +79,9 @@ fn generate_plist(exe: &std::path::Path) -> String {
         <false/>
     </dict>
 
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
     <key>StandardOutPath</key>
     <string>/dev/null</string>
 
@@ -193,7 +196,7 @@ fn generate_unit(exe: &std::path::Path) -> String {
          Type=simple\n\
          ExecStart={exe} daemon-foreground\n\
          Restart=on-failure\n\
-         RestartSec=5\n\
+         RestartSec=30\n\
          \n\
          [Install]\n\
          WantedBy=default.target\n",
