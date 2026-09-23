@@ -2,6 +2,7 @@
 //! when forwarding is up, and reports its exit.
 
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -9,8 +10,24 @@ use tokio::process::{Child, ChildStderr};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-/// Enough stderr to explain a failure without keeping a chatty session's history.
-const STDERR_TAIL_LINES: usize = 20;
+/// Kept for the error message (and port-conflict detection, which needs the
+/// "Address already in use" line that precedes ~3 follow-ups). The full
+/// stream is logged at debug level.
+const STDERR_TAIL_LINES: usize = 5;
+/// VERBOSE-level chatter that never explains a failure.
+const INFORMATIONAL_PREFIXES: &[&str] = &[
+    "Authenticated to ",
+    "Authenticated using ",
+    "Authentication succeeded",
+    "OpenSSH_",
+    "Transferred: ",
+    "Bytes per second",
+    "Server accepts key",
+    "Will attempt key",
+    "Offering public key",
+    "Connection established",
+    "Warning: Permanently added",
+];
 /// A jump-host child can inherit stderr and hold the pipe open after SSH exits.
 const STDERR_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 /// Logged by OpenSSH at VERBOSE level once auth succeeds; forwards are set
@@ -19,6 +36,11 @@ const AUTHENTICATED_MARKER: &str = "Authenticated to ";
 /// Fallback when the marker never shows (non-OpenSSH client): past
 /// ConnectTimeout with BatchMode, a live SSH must have authenticated.
 const READY_FALLBACK: Duration = Duration::from_secs(20);
+/// ExitOnForwardFailure exits right after auth if a forward can't bind;
+/// waiting a moment avoids a Connected blip (and notification) for that case.
+const READY_SETTLE: Duration = Duration::from_millis(500);
+
+type Tail = Arc<Mutex<VecDeque<String>>>;
 
 pub(super) enum MonitorEvent {
     Ready {
@@ -81,15 +103,17 @@ async fn supervise(
     tx: mpsc::UnboundedSender<MonitorEvent>,
 ) {
     let (auth_tx, auth_rx) = oneshot::channel();
+    let tail: Tail = Arc::default();
     let stderr_task = child
         .stderr
         .take()
-        .map(|s| tokio::spawn(collect_stderr_tail(s, id.clone(), auth_tx)));
+        .map(|s| tokio::spawn(collect_stderr(s, id.clone(), auth_tx, Arc::clone(&tail))));
     let ready = async {
         // An Err means the collector ended without the marker; fall back to time.
         if auth_rx.await.is_err() {
             std::future::pending::<()>().await;
         }
+        tokio::time::sleep(READY_SETTLE).await;
     };
     let ready = tokio::time::timeout(READY_FALLBACK, ready);
     tokio::pin!(ready);
@@ -113,10 +137,10 @@ async fn supervise(
         }
     };
 
-    let stderr = match stderr_task {
-        Some(task) => drain(task).await,
-        None => None,
-    };
+    if let Some(task) = stderr_task {
+        drain(task).await;
+    }
+    let stderr = take_tail(&tail);
     let _ = tx.send(MonitorEvent::Exited {
         id,
         generation,
@@ -125,27 +149,32 @@ async fn supervise(
     });
 }
 
-async fn drain(mut task: JoinHandle<Option<String>>) -> Option<String> {
-    match tokio::time::timeout(STDERR_DRAIN_TIMEOUT, &mut task).await {
-        Ok(Ok(tail)) => tail,
-        _ => {
-            task.abort();
-            None
-        }
+/// Give the collector a moment to read the final lines. Whatever it has
+/// gathered stays in the shared tail even if this times out.
+async fn drain(mut task: JoinHandle<()>) {
+    if tokio::time::timeout(STDERR_DRAIN_TIMEOUT, &mut task)
+        .await
+        .is_err()
+    {
+        task.abort();
     }
 }
 
-/// Read stderr until EOF, keeping the last lines and signalling `auth_tx`
-/// when SSH reports successful authentication. Reading continuously
-/// matters: a full pipe would block SSH mid-session.
-async fn collect_stderr_tail(
-    stderr: ChildStderr,
-    id: String,
-    auth_tx: oneshot::Sender<()>,
-) -> Option<String> {
+fn take_tail(tail: &Tail) -> Option<String> {
+    let lines = std::mem::take(&mut *tail.lock().unwrap_or_else(|e| e.into_inner()));
+    if lines.is_empty() {
+        None
+    } else {
+        Some(Vec::from(lines).join("\n"))
+    }
+}
+
+/// Read stderr until EOF, keeping the last meaningful lines in `tail` and
+/// signalling `auth_tx` when SSH reports successful authentication. Reading
+/// continuously matters: a full pipe would block SSH mid-session.
+async fn collect_stderr(stderr: ChildStderr, id: String, auth_tx: oneshot::Sender<()>, tail: Tail) {
     let mut auth_tx = Some(auth_tx);
     let mut reader = BufReader::new(stderr);
-    let mut tail: VecDeque<String> = VecDeque::with_capacity(STDERR_TAIL_LINES);
     let mut buf = Vec::new();
     loop {
         buf.clear();
@@ -163,15 +192,14 @@ async fn collect_stderr_tail(
         {
             let _ = tx.send(());
         }
+        if INFORMATIONAL_PREFIXES.iter().any(|p| line.starts_with(p)) {
+            continue;
+        }
+        let mut tail = tail.lock().unwrap_or_else(|e| e.into_inner());
         if tail.len() == STDERR_TAIL_LINES {
             tail.pop_front();
         }
         tail.push_back(line);
-    }
-    if tail.is_empty() {
-        None
-    } else {
-        Some(Vec::from(tail).join("\n"))
     }
 }
 
@@ -203,7 +231,10 @@ mod tests {
     #[tokio::test]
     async fn reports_exit_with_stderr_tail() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let child = spawn_sh("echo first >&2; echo last >&2; exit 3");
+        let child = spawn_sh(
+            "echo OpenSSH_10.3p1 >&2; echo zero >&2; echo first >&2; echo last >&2; \
+             echo 'Transferred: sent 1, received 2 bytes' >&2; exit 3",
+        );
         let _m = Monitor::spawn("t".into(), 7, child, tx);
 
         match rx.recv().await.unwrap() {
@@ -215,7 +246,7 @@ mod tests {
             } => {
                 assert_eq!(generation, 7);
                 assert_eq!(code, Some(3));
-                assert_eq!(stderr.as_deref(), Some("first\nlast"));
+                assert_eq!(stderr.as_deref(), Some("zero\nfirst\nlast"));
             }
             MonitorEvent::Ready { .. } => panic!("unexpected ready"),
         }
