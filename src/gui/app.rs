@@ -336,9 +336,11 @@ impl BurrowApp {
             }
 
             Message::ClearLogs => {
-                self.logs.clear();
-                self.log_content = text_editor::Content::new();
-                self.logs_dirty = false;
+                // Scoped to one tunnel, clear only its lines
+                let scope = self.log_scope.clone();
+                self.logs
+                    .retain(|e| !super::views::logs::matches_scope(e, scope.as_deref()));
+                self.rebuild_log_content();
                 Task::none()
             }
             Message::FlushLogs => {
@@ -447,9 +449,18 @@ impl BurrowApp {
             Subscription::none()
         };
 
+        // A past retry time with no update from the daemon must not keep a
+        // 1s timer alive; allow a few seconds for the retry to report back.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let countdown = self
+            .tunnels
+            .iter()
+            .any(|t| t.next_retry_at.is_some_and(|at| at + 5 > now));
         let tick = if !visible {
             Subscription::none()
-        } else if self.tunnels.iter().any(|t| t.next_retry_at.is_some()) {
+        } else if countdown {
             iced::time::every(COUNTDOWN_TICK).map(|_| Message::Tick)
         } else if self.tunnels.iter().any(|t| t.status == TunnelStatus::Connected) {
             iced::time::every(UPTIME_TICK).map(|_| Message::Tick)
