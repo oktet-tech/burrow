@@ -1,11 +1,10 @@
 use iced::font::Weight;
-use iced::widget::{
-    button, column, container, row, rule, space, text, text_editor,
-};
-use iced::{Center, Element, Font, Length};
+use iced::widget::{button, column, container, row, space, text, text_editor};
+use iced::{Center, Element, Font, Length, padding};
 
 use crate::gui::app::Message;
 use crate::gui::ipc_client::LogEvent;
+use crate::gui::style;
 
 const BOLD: Font = Font {
     weight: Weight::Bold,
@@ -17,19 +16,38 @@ const MONO: Font = Font {
     ..Font::DEFAULT
 };
 
-/// Log viewer panel: selectable text editor (read-only) with Clear and Export buttons.
-pub fn view<'a>(content: &'a text_editor::Content, has_logs: bool) -> Element<'a, Message> {
+/// Open log drawer: scope chip (all tunnels or one), actions, and a
+/// selectable read-only editor.
+pub fn panel<'a>(
+    content: &'a text_editor::Content,
+    has_logs: bool,
+    scope: Option<&'a str>,
+) -> Element<'a, Message> {
+    let scope_chip: Element<'a, Message> = match scope {
+        Some(name) => button(text(format!("{name}  \u{00D7}")).size(12))
+            .on_press(Message::ShowLogs(None))
+            .style(button::secondary)
+            .padding([2, 8])
+            .into(),
+        None => text("All tunnels").size(12).color(style::MUTED).into(),
+    };
+
     let header = row![
-        text("Logs").size(18).font(BOLD),
+        text("Logs").size(15).font(BOLD),
+        scope_chip,
         space::horizontal(),
-        button(text("Clear").size(13))
+        button(text("Clear").size(12))
             .on_press_maybe(has_logs.then_some(Message::ClearLogs))
             .style(button::secondary)
-            .padding([4, 12]),
-        button(text("Export").size(13))
+            .padding([3, 10]),
+        button(text("Export").size(12))
             .on_press_maybe(has_logs.then_some(Message::ExportLogs))
             .style(button::secondary)
-            .padding([4, 12]),
+            .padding([3, 10]),
+        button(text("Hide").size(12))
+            .on_press(Message::HideLogs)
+            .style(button::secondary)
+            .padding([3, 10]),
     ]
     .spacing(8)
     .align_y(Center);
@@ -40,17 +58,45 @@ pub fn view<'a>(content: &'a text_editor::Content, has_logs: bool) -> Element<'a
         .on_action(Message::LogEditorAction)
         .height(Length::Fill);
 
-    container(column![header, rule::horizontal(1), editor].spacing(8).height(Length::Fill))
-        .padding(16)
+    container(column![header, editor].spacing(8).height(Length::Fill))
+        .padding(padding::top(10).left(20).right(20).bottom(14))
         .width(Length::Fill)
-        .height(Length::FillPortion(1))
+        .height(Length::Fill)
         .into()
+}
+
+/// Collapsed drawer: a button to open all logs plus the latest line.
+pub fn collapsed_bar(last: Option<&LogEvent>) -> Element<'_, Message> {
+    let preview = last.map(format_log_line).unwrap_or_default();
+    row![
+        button(text("Show logs").size(12))
+            .on_press(Message::ShowLogs(None))
+            .style(button::secondary)
+            .padding([3, 10]),
+        text(preview)
+            .size(11)
+            .font(MONO)
+            .color(style::MUTED)
+            .wrapping(text::Wrapping::None),
+    ]
+    .spacing(10)
+    .align_y(Center)
+    .padding([8, 20])
+    .into()
+}
+
+/// Whether an event belongs in a log view scoped to `tunnel_id`.
+pub fn matches_scope(event: &LogEvent, tunnel_id: Option<&str>) -> bool {
+    tunnel_id.is_none_or(|id| event.tunnel_id.as_deref() == Some(id))
 }
 
 /// Format a single log event into a display line.
 pub fn format_log_line(event: &LogEvent) -> String {
     let time = extract_time(&event.timestamp);
-    format!("{time} {:<5} [{}] {}", event.level, event.target, event.message)
+    format!(
+        "{time} {:<5} [{}] {}",
+        event.level, event.target, event.message
+    )
 }
 
 /// Build full text content from the log buffer.
@@ -106,12 +152,29 @@ mod tests {
     }
 
     #[test]
+    fn scope_filters_by_tunnel() {
+        let mut event = LogEvent {
+            timestamp: String::new(),
+            level: "INFO".into(),
+            target: "t".into(),
+            message: "m".into(),
+            tunnel_id: Some("db".into()),
+        };
+        assert!(matches_scope(&event, None));
+        assert!(matches_scope(&event, Some("db")));
+        assert!(!matches_scope(&event, Some("other")));
+        event.tunnel_id = None;
+        assert!(!matches_scope(&event, Some("db")));
+    }
+
+    #[test]
     fn format_includes_level_and_target() {
         let event = LogEvent {
             timestamp: "2024-01-15T10:30:01.123".into(),
             level: "ERROR".into(),
             target: "daemon::tunnel".into(),
             message: "connection refused".into(),
+            tunnel_id: None,
         };
         assert_eq!(
             format_log_line(&event),

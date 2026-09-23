@@ -39,6 +39,7 @@ pub struct LogEvent {
     pub level: String,
     pub target: String,
     pub message: String,
+    pub tunnel_id: Option<String>,
 }
 
 enum ClientCmd {
@@ -326,6 +327,7 @@ fn dispatch_line(
                             level: log_line.level,
                             target: log_line.target,
                             message: log_line.message,
+                            tunnel_id: log_line.tunnel_id,
                         };
                         let _ = event_tx.try_send(DaemonEvent::LogLine(ev));
                     }

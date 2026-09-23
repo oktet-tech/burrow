@@ -1,7 +1,7 @@
 use iced::font::Weight;
 use iced::widget::{
     button, column, container, pick_list, row, rule, scrollable, space, text,
-    text_input,
+    text_input, toggler,
 };
 use iced::{Center, Element, Font, Length};
 
@@ -258,7 +258,12 @@ pub fn build_config_json(state: &TunnelFormState) -> serde_json::Value {
 
 // -- View --
 
-pub fn view<'a>(state: &'a TunnelFormState, error: &'a Option<String>) -> Element<'a, Message> {
+/// `enabled` is the edited tunnel's current state (None when creating).
+pub fn view<'a>(
+    state: &'a TunnelFormState,
+    error: &'a Option<String>,
+    enabled: Option<bool>,
+) -> Element<'a, Message> {
     let is_edit = state.editing_id.is_some();
     let title = if is_edit { "Edit Tunnel" } else { "New Tunnel" };
     let submit_label = if is_edit { "Save" } else { "Create" };
@@ -453,7 +458,16 @@ pub fn view<'a>(state: &'a TunnelFormState, error: &'a Option<String>) -> Elemen
         .spacing(12),
     );
 
-    // Delete section (edit mode only)
+    // Enable toggle and delete (edit mode only)
+    if let (Some(id), Some(enabled)) = (state.editing_id.clone(), enabled) {
+        form = form.push(rule::horizontal(1));
+        form = form.push(
+            toggler(enabled)
+                .label("Enabled")
+                .on_toggle(move |on| Message::ToggleEnabled(id.clone(), on))
+                .size(18.0),
+        );
+    }
     if is_edit {
         form = form.push(rule::horizontal(1));
         if state.delete_confirming {

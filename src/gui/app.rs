@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use iced::futures::SinkExt;
-use iced::widget::{column, container, text, text_editor};
+use iced::widget::{column, container, rule, text, text_editor};
 use iced::window;
 use iced::{Element, Length, Size, Subscription, Task};
 use serde_json::json;
@@ -22,6 +22,10 @@ const ERROR_NOTIFICATION_COOLDOWN_SECS: u64 = 60;
 /// Coalesces log bursts (e.g. the 512-line backlog on connect) into one
 /// re-layout of the log editor.
 const LOG_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
+/// Redraw cadence for a visible retry countdown.
+const COUNTDOWN_TICK: Duration = Duration::from_secs(1);
+/// Redraw cadence for session uptimes, which show minutes at most.
+const UPTIME_TICK: Duration = Duration::from_secs(30);
 
 // -- Messages --
 
@@ -75,6 +79,12 @@ pub enum Message {
     ClearLogs,
     ExportLogs,
     FlushLogs,
+    /// Open the log drawer, for one tunnel or (None) for all.
+    ShowLogs(Option<String>),
+    HideLogs,
+    ToggleDisabledSection,
+    /// Redraw so countdowns and uptimes stay current.
+    Tick,
     LogEditorAction(text_editor::Action),
 
     // Action completions
@@ -98,6 +108,10 @@ pub struct BurrowApp {
     log_content: text_editor::Content,
     /// Logs arrived since log_content was last rebuilt.
     logs_dirty: bool,
+    logs_open: bool,
+    /// Tunnel whose log lines the drawer shows; None shows all.
+    log_scope: Option<String>,
+    show_disabled: bool,
     daemon_connected: bool,
     client: Option<GuiIpcClient>,
     initial_fetch_done: bool,
@@ -132,6 +146,9 @@ impl BurrowApp {
                 logs: VecDeque::new(),
                 log_content: text_editor::Content::new(),
                 logs_dirty: false,
+                logs_open: false,
+                log_scope: None,
+                show_disabled: false,
                 daemon_connected: false,
                 client: None,
                 initial_fetch_done: false,
@@ -332,9 +349,24 @@ impl BurrowApp {
                 Task::none()
             }
             Message::ExportLogs => {
-                export_logs(&self.logs);
+                export_logs(self.scoped_logs());
                 Task::none()
             }
+            Message::ShowLogs(scope) => {
+                self.logs_open = true;
+                self.log_scope = scope;
+                self.rebuild_log_content();
+                Task::none()
+            }
+            Message::HideLogs => {
+                self.logs_open = false;
+                Task::none()
+            }
+            Message::ToggleDisabledSection => {
+                self.show_disabled = !self.show_disabled;
+                Task::none()
+            }
+            Message::Tick => Task::none(),
             Message::LogEditorAction(action) => {
                 // Read-only: allow selection and cursor movement, block edits
                 if !matches!(action, text_editor::Action::Edit(_)) {
@@ -367,22 +399,60 @@ impl BurrowApp {
         }
 
         if self.show_new_tunnel_form {
-            tunnel_form::view(&self.form_state, &self.form_error)
+            let enabled = self
+                .form_state
+                .editing_id
+                .as_ref()
+                .and_then(|id| self.tunnels.iter().find(|t| &t.id == id))
+                .map(|t| t.enabled);
+            return tunnel_form::view(&self.form_state, &self.form_error, enabled);
+        }
+
+        let list = container(super::views::tunnel_list::view(
+            &self.tunnels,
+            self.show_disabled,
+        ))
+        .height(Length::FillPortion(3));
+
+        let drawer: Element<'_, Message> = if self.logs_open {
+            let scope_name = self.log_scope.as_ref().map(|id| {
+                self.tunnels
+                    .iter()
+                    .find(|t| &t.id == id)
+                    .map_or(id.as_str(), |t| t.name.as_str())
+            });
+            container(super::views::logs::panel(
+                &self.log_content,
+                self.scoped_logs().next().is_some(),
+                scope_name,
+            ))
+            .height(Length::FillPortion(2))
+            .into()
         } else {
-            column![
-                super::views::tunnel_list::view(&self.tunnels),
-                super::views::logs::view(&self.log_content, !self.logs.is_empty()),
-            ]
+            super::views::logs::collapsed_bar(self.logs.back())
+        };
+
+        column![list, rule::horizontal(1), drawer]
             .height(Length::Fill)
             .into()
-        }
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
         // Timer exists only while there is something to flush, so an idle
         // or hidden app gets no periodic wakeups.
-        let log_flush = if self.logs_dirty && self.window_id.is_some() {
+        let visible = self.window_id.is_some();
+        let log_flush = if self.logs_dirty && visible && self.logs_open {
             iced::time::every(LOG_FLUSH_INTERVAL).map(|_| Message::FlushLogs)
+        } else {
+            Subscription::none()
+        };
+
+        let tick = if !visible {
+            Subscription::none()
+        } else if self.tunnels.iter().any(|t| t.next_retry_at.is_some()) {
+            iced::time::every(COUNTDOWN_TICK).map(|_| Message::Tick)
+        } else if self.tunnels.iter().any(|t| t.status == TunnelStatus::Connected) {
+            iced::time::every(UPTIME_TICK).map(|_| Message::Tick)
         } else {
             Subscription::none()
         };
@@ -394,6 +464,7 @@ impl BurrowApp {
             window::close_requests().map(Message::WindowCloseRequested),
             window::close_events().map(Message::WindowClosed),
             log_flush,
+            tick,
         ])
     }
 
@@ -617,9 +688,17 @@ impl BurrowApp {
         )
     }
 
+    /// Buffered log lines within the drawer's current scope.
+    fn scoped_logs(&self) -> impl Iterator<Item = &LogEvent> {
+        let scope = self.log_scope.as_deref();
+        self.logs
+            .iter()
+            .filter(move |e| super::views::logs::matches_scope(e, scope))
+    }
+
     fn rebuild_log_content(&mut self) {
         self.logs_dirty = false;
-        let text = super::views::logs::build_log_text(&self.logs);
+        let text = super::views::logs::build_log_text(self.scoped_logs());
         self.log_content = text_editor::Content::with_text(&text);
         self.log_content
             .perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
@@ -676,7 +755,7 @@ impl BurrowApp {
 
 // -- Log export --
 
-fn export_logs(logs: &VecDeque<LogEvent>) {
+fn export_logs<'a>(logs: impl Iterator<Item = &'a LogEvent>) {
     let log_dir = crate::common::logging::log_path()
         .parent()
         .map(|p| p.to_path_buf())
@@ -693,7 +772,9 @@ fn export_logs(logs: &VecDeque<LogEvent>) {
     }
 
     let mut content = String::new();
+    let mut lines = 0;
     for log in logs {
+        lines += 1;
         content.push_str(&format!(
             "{} [{}] [{}] {}\n",
             log.timestamp, log.level, log.target, log.message
@@ -701,7 +782,7 @@ fn export_logs(logs: &VecDeque<LogEvent>) {
     }
 
     match std::fs::write(&path, &content) {
-        Ok(()) => tracing::info!(path = %path.display(), lines = logs.len(), "logs exported"),
+        Ok(()) => tracing::info!(path = %path.display(), lines, "logs exported"),
         Err(e) => tracing::error!(error = %e, "failed to export logs"),
     }
 }
