@@ -48,6 +48,7 @@ pub fn view(tunnels: &[TunnelInfo], show_disabled: bool) -> Element<'_, Message>
 
     let header = row![
         text("Tunnels").size(20).font(BOLD),
+        text(env!("BURROW_REVISION")).size(11).color(style::MUTED),
         space::horizontal(),
         small_button("Reload", Message::ReloadConfig, style::secondary_button),
         small_button("Restart all", Message::RestartAll, style::secondary_button),
