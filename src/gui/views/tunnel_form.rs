@@ -271,14 +271,14 @@ pub fn view<'a>(
     let header = row![
         button(text("Cancel").size(13))
             .on_press(Message::CancelNewTunnelForm)
-            .style(button::secondary)
+            .style(style::secondary_button)
             .padding([4, 12]),
         space::horizontal(),
         text(title).size(18).font(BOLD),
         space::horizontal(),
         button(text(submit_label).size(13))
             .on_press(Message::SubmitNewTunnel)
-            .style(button::primary)
+            .style(style::primary_button)
             .padding([4, 12]),
     ]
     .spacing(8)
@@ -477,7 +477,7 @@ pub fn view<'a>(
                     space::horizontal(),
                     button(text("Cancel").size(13))
                         .on_press(Message::FormCancelDelete)
-                        .style(button::secondary)
+                        .style(style::secondary_button)
                         .padding([4, 12]),
                     button(text("Delete").size(13))
                         .on_press(Message::FormDeleteTunnel)

@@ -26,7 +26,7 @@ pub fn panel<'a>(
     let scope_chip: Element<'a, Message> = match scope {
         Some(name) => button(text(format!("{name}  \u{00D7}")).size(12))
             .on_press(Message::ShowLogs(None))
-            .style(button::secondary)
+            .style(style::secondary_button)
             .padding([2, 8])
             .into(),
         None => text("All tunnels").size(12).color(style::MUTED).into(),
@@ -38,15 +38,15 @@ pub fn panel<'a>(
         space::horizontal(),
         button(text("Clear").size(12))
             .on_press_maybe(has_logs.then_some(Message::ClearLogs))
-            .style(button::secondary)
+            .style(style::secondary_button)
             .padding([3, 10]),
         button(text("Export").size(12))
             .on_press_maybe(has_logs.then_some(Message::ExportLogs))
-            .style(button::secondary)
+            .style(style::secondary_button)
             .padding([3, 10]),
         button(text("Hide").size(12))
             .on_press(Message::HideLogs)
-            .style(button::secondary)
+            .style(style::secondary_button)
             .padding([3, 10]),
     ]
     .spacing(8)
@@ -71,7 +71,7 @@ pub fn collapsed_bar(last: Option<&LogEvent>) -> Element<'_, Message> {
     row![
         button(text("Show logs").size(12))
             .on_press(Message::ShowLogs(None))
-            .style(button::secondary)
+            .style(style::secondary_button)
             .padding([3, 10]),
         text(preview)
             .size(11)

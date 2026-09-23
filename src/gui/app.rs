@@ -407,7 +407,13 @@ impl BurrowApp {
                 .as_ref()
                 .and_then(|id| self.tunnels.iter().find(|t| &t.id == id))
                 .map(|t| t.enabled);
-            return tunnel_form::view(&self.form_state, &self.form_error, enabled);
+            return container(tunnel_form::view(
+                &self.form_state,
+                &self.form_error,
+                enabled,
+            ))
+            .style(super::style::window)
+            .into();
         }
 
         let list = container(super::views::tunnel_list::view(
@@ -434,8 +440,8 @@ impl BurrowApp {
             super::views::logs::collapsed_bar(self.logs.back())
         };
 
-        column![list, rule::horizontal(1), drawer]
-            .height(Length::Fill)
+        container(column![list, rule::horizontal(1), drawer].height(Length::Fill))
+            .style(super::style::window)
             .into()
     }
 

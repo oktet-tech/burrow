@@ -49,9 +49,9 @@ pub fn view(tunnels: &[TunnelInfo], show_disabled: bool) -> Element<'_, Message>
     let header = row![
         text("Tunnels").size(20).font(BOLD),
         space::horizontal(),
-        small_button("Reload", Message::ReloadConfig, button::secondary),
-        small_button("Restart all", Message::RestartAll, button::secondary),
-        small_button("New Tunnel", Message::ShowNewTunnelForm, button::primary),
+        small_button("Reload", Message::ReloadConfig, style::secondary_button),
+        small_button("Restart all", Message::RestartAll, style::secondary_button),
+        small_button("New Tunnel", Message::ShowNewTunnelForm, style::primary_button),
     ]
     .spacing(8)
     .align_y(Center);
@@ -227,13 +227,13 @@ fn attention_card(t: &TunnelInfo, now: u64) -> Element<'_, Message> {
     }
 
     let actions = row![
-        small_button("Retry now", Message::Connect(t.id.clone()), button::primary),
+        small_button("Retry now", Message::Connect(t.id.clone()), style::primary_button),
         small_button(
             "View log",
             Message::ShowLogs(Some(t.id.clone())),
-            button::secondary
+            style::secondary_button
         ),
-        small_button("Edit", Message::EditTunnel(t.id.clone()), button::secondary),
+        small_button("Edit", Message::EditTunnel(t.id.clone()), style::secondary_button),
     ]
     .spacing(8);
 
@@ -274,14 +274,14 @@ fn small_button<'a>(
     button(text(label).size(13))
         .on_press(msg)
         .style(style)
-        .padding([5, 12])
+        .padding([6, 14])
         .into()
 }
 
 fn link_button(label: &str, msg: Message) -> Element<'_, Message> {
     button(text(label).size(12))
         .on_press(msg)
-        .style(button::text)
+        .style(style::link_button)
         .padding([4, 2])
         .into()
 }
@@ -314,7 +314,7 @@ fn primary_action(t: &TunnelInfo) -> Element<'_, Message> {
     };
     button(text(label).size(12))
         .on_press(msg)
-        .style(button::secondary)
+        .style(style::secondary_button)
         .padding([4, 10])
         .into()
 }
