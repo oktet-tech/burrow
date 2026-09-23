@@ -178,6 +178,7 @@ Each tunnel spawns an SSH subprocess:
 ssh -N -L 127.0.0.1:5432:db.internal:5432 \
     -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
     -o ExitOnForwardFailure=yes \
+    -o BatchMode=yes -o ConnectTimeout=15 \
     -i ~/.ssh/work_key \
     -J gateway.example.com \
     -p 22 \
@@ -194,6 +195,8 @@ ssh -N -D 127.0.0.1:1080 ...
 
 - `-N` — No remote command
 - `-o ExitOnForwardFailure=yes` — Fail fast if port bind fails
+- `-o BatchMode=yes` — Never prompt (no terminal); auth must use keys/agent
+- `-o ConnectTimeout=15` — Don't hang on unreachable hosts
 - `-o ServerAliveInterval=30` (when keepalive=true)
 - `-o ServerAliveCountMax=3` (when keepalive=true)
 

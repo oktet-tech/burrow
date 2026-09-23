@@ -73,7 +73,7 @@ impl Tunnel {
 
     /// Build SSH command-line arguments per DESIGN.md.
     ///
-    /// Always includes: -N, -o ExitOnForwardFailure=yes
+    /// Always includes: -N, -o ExitOnForwardFailure=yes, BatchMode=yes, ConnectTimeout=15
     /// Keepalive adds: -o ServerAliveInterval=30, -o ServerAliveCountMax=3
     /// Forward flag depends on tunnel type: -L (local), -R (reverse), -D (socks)
     pub fn build_ssh_args(&self) -> Vec<String> {
@@ -83,6 +83,13 @@ impl Tunnel {
 
         args.push("-o".into());
         args.push("ExitOnForwardFailure=yes".into());
+
+        // The daemon has no terminal: fail instead of waiting on a password,
+        // passphrase or host-key prompt, and don't hang on unreachable hosts.
+        args.push("-o".into());
+        args.push("BatchMode=yes".into());
+        args.push("-o".into());
+        args.push("ConnectTimeout=15".into());
 
         if self.keepalive {
             args.push("-o".into());
@@ -386,6 +393,8 @@ mod tests {
 
         assert!(args.contains(&"-N".to_string()));
         assert!(args.contains(&"ExitOnForwardFailure=yes".to_string()));
+        assert!(args.contains(&"BatchMode=yes".to_string()));
+        assert!(args.contains(&"ConnectTimeout=15".to_string()));
         assert!(args.contains(&"ServerAliveInterval=30".to_string()));
         assert!(args.contains(&"-L".to_string()));
         assert!(args.contains(&"127.0.0.1:59432:db.internal:5432".to_string()));
