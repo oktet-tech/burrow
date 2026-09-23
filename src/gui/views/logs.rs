@@ -65,19 +65,22 @@ pub fn panel<'a>(
         .into()
 }
 
-/// Collapsed drawer: a button to open all logs plus the latest line.
+/// Collapsed drawer: the latest line plus a button to open all logs. The
+/// button sits on the right, where the open drawer's controls are, so it
+/// doesn't jump when toggling.
 pub fn collapsed_bar(last: Option<&LogEvent>) -> Element<'_, Message> {
     let preview = last.map(format_log_line).unwrap_or_default();
     row![
-        button(text("Show logs").size(12))
-            .on_press(Message::ShowLogs(None))
-            .style(style::secondary_button)
-            .padding([3, 10]),
         text(preview)
             .size(11)
             .font(MONO)
             .color(style::MUTED)
-            .wrapping(text::Wrapping::None),
+            .wrapping(text::Wrapping::None)
+            .width(Length::Fill),
+        button(text("Show logs").size(12))
+            .on_press(Message::ShowLogs(None))
+            .style(style::secondary_button)
+            .padding([3, 10]),
     ]
     .spacing(10)
     .align_y(Center)
