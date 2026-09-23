@@ -13,7 +13,12 @@ use tokio::task::JoinHandle;
 const STDERR_TAIL_LINES: usize = 20;
 /// A jump-host child can inherit stderr and hold the pipe open after SSH exits.
 const STDERR_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
-const READY_POLL_MAX: Duration = Duration::from_secs(1);
+/// Logged by OpenSSH at VERBOSE level once auth succeeds; forwards are set
+/// up right after, and ExitOnForwardFailure exits if they can't be.
+const AUTHENTICATED_MARKER: &str = "Authenticated to ";
+/// Fallback when the marker never shows (non-OpenSSH client): past
+/// ConnectTimeout with BatchMode, a live SSH must have authenticated.
+const READY_FALLBACK: Duration = Duration::from_secs(20);
 
 pub(super) enum MonitorEvent {
     Ready {
@@ -42,15 +47,6 @@ impl MonitorEvent {
     }
 }
 
-/// How to tell that the SSH session is forwarding traffic.
-pub(super) enum Readiness {
-    /// SSH has bound this port on 127.0.0.1 (local and SOCKS forwards).
-    LocalPort(u16),
-    /// No local signal exists (reverse forwards); assume ready once SSH has
-    /// survived this long, since ExitOnForwardFailure kills it otherwise.
-    After(Duration),
-}
-
 /// Handle to a running monitor. Dropping it also kills SSH.
 pub(super) struct Monitor {
     cancel: oneshot::Sender<()>,
@@ -62,11 +58,10 @@ impl Monitor {
         id: String,
         generation: u64,
         child: Child,
-        readiness: Readiness,
         tx: mpsc::UnboundedSender<MonitorEvent>,
     ) -> Self {
         let (cancel, cancel_rx) = oneshot::channel();
-        let handle = tokio::spawn(supervise(id, generation, child, readiness, cancel_rx, tx));
+        let handle = tokio::spawn(supervise(id, generation, child, cancel_rx, tx));
         Self { cancel, handle }
     }
 
@@ -82,15 +77,21 @@ async fn supervise(
     id: String,
     generation: u64,
     mut child: Child,
-    readiness: Readiness,
     mut cancel_rx: oneshot::Receiver<()>,
     tx: mpsc::UnboundedSender<MonitorEvent>,
 ) {
+    let (auth_tx, auth_rx) = oneshot::channel();
     let stderr_task = child
         .stderr
         .take()
-        .map(|s| tokio::spawn(collect_stderr_tail(s, id.clone())));
-    let ready = wait_ready(readiness);
+        .map(|s| tokio::spawn(collect_stderr_tail(s, id.clone(), auth_tx)));
+    let ready = async {
+        // An Err means the collector ended without the marker; fall back to time.
+        if auth_rx.await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    let ready = tokio::time::timeout(READY_FALLBACK, ready);
     tokio::pin!(ready);
     let mut ready_sent = false;
 
@@ -105,7 +106,7 @@ async fn supervise(
                 }
                 return;
             }
-            () = &mut ready, if !ready_sent => {
+            _ = &mut ready, if !ready_sent => {
                 ready_sent = true;
                 let _ = tx.send(MonitorEvent::Ready { id: id.clone(), generation });
             }
@@ -134,9 +135,15 @@ async fn drain(mut task: JoinHandle<Option<String>>) -> Option<String> {
     }
 }
 
-/// Read stderr until EOF, keeping the last lines. Reading continuously
+/// Read stderr until EOF, keeping the last lines and signalling `auth_tx`
+/// when SSH reports successful authentication. Reading continuously
 /// matters: a full pipe would block SSH mid-session.
-async fn collect_stderr_tail(stderr: ChildStderr, id: String) -> Option<String> {
+async fn collect_stderr_tail(
+    stderr: ChildStderr,
+    id: String,
+    auth_tx: oneshot::Sender<()>,
+) -> Option<String> {
+    let mut auth_tx = Some(auth_tx);
     let mut reader = BufReader::new(stderr);
     let mut tail: VecDeque<String> = VecDeque::with_capacity(STDERR_TAIL_LINES);
     let mut buf = Vec::new();
@@ -151,6 +158,11 @@ async fn collect_stderr_tail(stderr: ChildStderr, id: String) -> Option<String> 
             continue;
         }
         tracing::debug!(tunnel_id = %id, "ssh: {line}");
+        if line.contains(AUTHENTICATED_MARKER)
+            && let Some(tx) = auth_tx.take()
+        {
+            let _ = tx.send(());
+        }
         if tail.len() == STDERR_TAIL_LINES {
             tail.pop_front();
         }
@@ -161,28 +173,6 @@ async fn collect_stderr_tail(stderr: ChildStderr, id: String) -> Option<String> 
     } else {
         Some(Vec::from(tail).join("\n"))
     }
-}
-
-async fn wait_ready(readiness: Readiness) {
-    match readiness {
-        Readiness::After(delay) => tokio::time::sleep(delay).await,
-        Readiness::LocalPort(port) => {
-            let mut delay = Duration::from_millis(100);
-            while !port_is_bound(port) {
-                tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(READY_POLL_MAX);
-            }
-        }
-    }
-}
-
-/// True once something listens on 127.0.0.1:port. Probes by binding rather
-/// than connecting so no forwarded connection is opened to the remote side.
-fn port_is_bound(port: u16) -> bool {
-    matches!(
-        std::net::TcpListener::bind(("127.0.0.1", port)),
-        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse
-    )
 }
 
 #[cfg(test)]
@@ -210,25 +200,11 @@ mod tests {
             .unwrap_or(false)
     }
 
-    #[test]
-    fn port_probe_detects_listener() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        assert!(port_is_bound(port));
-        drop(listener);
-    }
-
     #[tokio::test]
     async fn reports_exit_with_stderr_tail() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let child = spawn_sh("echo first >&2; echo last >&2; exit 3");
-        let _m = Monitor::spawn(
-            "t".into(),
-            7,
-            child,
-            Readiness::After(Duration::from_secs(60)),
-            tx,
-        );
+        let _m = Monitor::spawn("t".into(), 7, child, tx);
 
         match rx.recv().await.unwrap() {
             MonitorEvent::Exited {
@@ -253,13 +229,7 @@ mod tests {
         let child = spawn_sh(
             "i=0; while [ $i -lt 4000 ]; do echo 'channel 3: open failed: connect failed: xxxxxxxxxxxx' >&2; i=$((i+1)); done; exit 1",
         );
-        let _m = Monitor::spawn(
-            "t".into(),
-            1,
-            child,
-            Readiness::After(Duration::from_secs(60)),
-            tx,
-        );
+        let _m = Monitor::spawn("t".into(), 1, child, tx);
 
         let event = tokio::time::timeout(Duration::from_secs(10), rx.recv())
             .await
@@ -271,17 +241,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reports_ready_when_port_bound() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
+    async fn reports_ready_on_authenticated_line() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let m = Monitor::spawn(
-            "t".into(),
-            1,
-            spawn_sh("exec sleep 60"),
-            Readiness::LocalPort(port),
-            tx,
+        let child = spawn_sh(
+            "echo 'Authenticated to bastion ([10.0.0.1]:22) using \"publickey\".' >&2; exec sleep 60",
         );
+        let m = Monitor::spawn("t".into(), 1, child, tx);
 
         let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await
@@ -295,13 +260,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let child = spawn_sh("exec sleep 60");
         let pid = child.id().unwrap();
-        let m = Monitor::spawn(
-            "t".into(),
-            1,
-            child,
-            Readiness::After(Duration::from_secs(60)),
-            tx,
-        );
+        let m = Monitor::spawn("t".into(), 1, child, tx);
 
         m.stop().await;
         assert!(!pid_alive(pid));

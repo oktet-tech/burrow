@@ -1,16 +1,11 @@
 use std::net::TcpListener;
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tokio::process::Command;
 
 use crate::config::schema::{Defaults, TunnelConfig, TunnelMode, TunnelType};
 use crate::ipc::protocol::{TunnelInfo, TunnelStats, TunnelStatus};
-
-use super::monitor::Readiness;
-
-/// How long a reverse tunnel's SSH must survive before it counts as up.
-const REVERSE_READY_AFTER: Duration = Duration::from_secs(5);
 
 pub struct Tunnel {
     pub id: String,
@@ -73,7 +68,8 @@ impl Tunnel {
 
     /// Build SSH command-line arguments per DESIGN.md.
     ///
-    /// Always includes: -N, -o ExitOnForwardFailure=yes, BatchMode=yes, ConnectTimeout=15
+    /// Always includes: -N, -o ExitOnForwardFailure=yes, BatchMode=yes, ConnectTimeout=15,
+    /// LogLevel=VERBOSE
     /// Keepalive adds: -o ServerAliveInterval=30, -o ServerAliveCountMax=3
     /// Forward flag depends on tunnel type: -L (local), -R (reverse), -D (socks)
     pub fn build_ssh_args(&self) -> Vec<String> {
@@ -90,6 +86,9 @@ impl Tunnel {
         args.push("BatchMode=yes".into());
         args.push("-o".into());
         args.push("ConnectTimeout=15".into());
+        // Makes SSH log "Authenticated to ...", which marks the tunnel up.
+        args.push("-o".into());
+        args.push("LogLevel=VERBOSE".into());
 
         if self.keepalive {
             args.push("-o".into());
@@ -195,14 +194,6 @@ impl Tunnel {
         tracing::info!(tunnel_id = %self.id, pid = ?self.pid, "SSH process started");
 
         Ok(child)
-    }
-
-    /// How the monitor should detect that forwarding is up.
-    pub(super) fn readiness(&self) -> Readiness {
-        match self.config.tunnel_type {
-            TunnelType::Local | TunnelType::Socks => Readiness::LocalPort(self.config.local_port),
-            TunnelType::Reverse => Readiness::After(REVERSE_READY_AFTER),
-        }
     }
 
     /// Record that forwarding is up. No-op unless still connecting.
@@ -395,6 +386,7 @@ mod tests {
         assert!(args.contains(&"ExitOnForwardFailure=yes".to_string()));
         assert!(args.contains(&"BatchMode=yes".to_string()));
         assert!(args.contains(&"ConnectTimeout=15".to_string()));
+        assert!(args.contains(&"LogLevel=VERBOSE".to_string()));
         assert!(args.contains(&"ServerAliveInterval=30".to_string()));
         assert!(args.contains(&"-L".to_string()));
         assert!(args.contains(&"127.0.0.1:59432:db.internal:5432".to_string()));
@@ -599,6 +591,8 @@ mod tests {
     #[tokio::test]
     async fn spawn_nonexistent_binary_sets_error() {
         let mut config = local_config();
+        // Unique port: start() briefly binds it and tests run in parallel
+        config.local_port = 59433;
         config.ssh_binary = Some("/nonexistent/ssh".into());
         let mut t = Tunnel::new("t".into(), config, &defaults());
 
@@ -612,6 +606,8 @@ mod tests {
     async fn spawn_false_sets_error_with_exit_code() {
         // `false` exits immediately with code 1 -- simulates SSH failure
         let mut config = local_config();
+        // Unique port: start() briefly binds it and tests run in parallel
+        config.local_port = 59434;
         config.ssh_binary = Some("false".into());
         let mut t = Tunnel::new("t".into(), config, &defaults());
 
@@ -632,7 +628,9 @@ mod tests {
 
     #[tokio::test]
     async fn port_conflict_cleared_on_start_attempt() {
-        let mut t = Tunnel::new("t".into(), local_config(), &defaults());
+        let mut config = local_config();
+        config.local_port = 59435;
+        let mut t = Tunnel::new("t".into(), config, &defaults());
         t.port_conflict = true;
         // start() will fail (no real SSH), but port_conflict should be cleared
         let _ = t.start();

@@ -99,13 +99,7 @@ fn start_tunnel(
         .map_err(|e| format!("failed to start tunnel '{id}': {e}"))?;
 
     mt.generation += 1;
-    mt.monitor = Some(Monitor::spawn(
-        id,
-        mt.generation,
-        child,
-        mt.tunnel.readiness(),
-        exit_tx.clone(),
-    ));
+    mt.monitor = Some(Monitor::spawn(id, mt.generation, child, exit_tx.clone()));
     Ok(())
 }
 
@@ -920,10 +914,14 @@ mod tests {
     /// Script that ignores SSH arguments and stays alive, unlike `sleep`,
     /// which rejects the `-N` flag and exits immediately.
     fn long_running_fake_ssh() -> (tempfile::TempDir, String) {
+        fake_ssh("exec sleep 60")
+    }
+
+    fn fake_ssh(body: &str) -> (tempfile::TempDir, String) {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fake-ssh");
-        std::fs::write(&path, "#!/bin/sh\nexec sleep 60\n").unwrap();
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         (dir, path.to_string_lossy().into_owned())
     }
@@ -1004,7 +1002,7 @@ mod tests {
         mgr.load_tunnels(&config).await;
 
         mgr.connect("dev-db").await.unwrap();
-        // Nothing binds the local port, so it never becomes Connected.
+        // No "Authenticated to" line yet, so not Connected.
         let info = mgr.get("dev-db").await.unwrap();
         assert_eq!(info.status, TunnelStatus::Connecting);
 
@@ -1102,9 +1100,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn becomes_connected_when_port_bound() {
+    async fn becomes_connected_after_authentication() {
         let mut config = test_config();
-        let (_dir, fake_ssh) = long_running_fake_ssh();
+        let (_dir, fake_ssh) = fake_ssh("echo 'Authenticated to bastion' >&2; exec sleep 60");
         let tc = config.tunnel.get_mut("dev-db").unwrap();
         tc.ssh_binary = Some(fake_ssh);
         tc.local_port = 59010;
@@ -1112,10 +1110,7 @@ mod tests {
         let mgr = TunnelManager::new();
         mgr.load_tunnels(&config).await;
         mgr.connect("dev-db").await.unwrap();
-
-        // Stand in for SSH binding the forward port
-        let _listener = std::net::TcpListener::bind("127.0.0.1:59010").unwrap();
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
 
         let info = mgr.get("dev-db").await.unwrap();
         mgr.disconnect("dev-db").await.unwrap();
