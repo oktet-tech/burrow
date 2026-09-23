@@ -89,6 +89,9 @@ pub async fn run(broadcast: LogBroadcast) -> Result<(), DaemonError> {
         }
     }
 
+    // Bind before spawning SSH so a bind failure leaves no children behind.
+    let listener = server::bind(&path)?;
+
     // Restore persisted state (enabled flags, accumulated stats)
     let persisted = state::load_state();
     mgr.apply_state(&persisted).await;
@@ -108,10 +111,11 @@ pub async fn run(broadcast: LogBroadcast) -> Result<(), DaemonError> {
 
     tracing::info!("starting daemon, socket: {}", path.display());
 
-    let result = server::run(&path, mgr.clone(), broadcast).await;
+    let result = server::run(listener, mgr.clone(), broadcast).await;
 
-    // Final state save before exit
+    // Save while sessions are live so their uptime is counted, then kill SSH.
     mgr.save_state_now(&state_file).await;
+    mgr.shutdown().await;
 
     // Always clean up socket on exit
     if path.exists() {

@@ -673,6 +673,21 @@ impl TunnelManager {
         });
     }
 
+    /// Stop every SSH process and pending timer so none outlive the daemon.
+    pub async fn shutdown(&self) {
+        let mut state = self.inner.lock().await;
+        for mt in state.tunnels.values_mut() {
+            if let Some(handle) = mt.reconnect_task.take() {
+                handle.abort();
+            }
+            mt.stub_handle = None;
+            mt.generation += 1;
+            if let Some(monitor) = mt.monitor.take() {
+                monitor.stop().await;
+            }
+        }
+    }
+
     /// Save state synchronously (for daemon shutdown).
     pub async fn save_state_now(&self, path: &std::path::Path) {
         let snapshot = Self::snapshot_state(&self.inner).await;

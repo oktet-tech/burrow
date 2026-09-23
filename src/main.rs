@@ -91,7 +91,11 @@ fn run_daemon_foreground() {
 
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
 
-    if let Err(e) = rt.block_on(daemon::run(broadcast)) {
+    let result = rt.block_on(daemon::run(broadcast));
+    // process::exit skips destructors; drop the runtime first so any
+    // remaining tasks drop their Child handles and kill SSH.
+    drop(rt);
+    if let Err(e) = result {
         tracing::error!(error = %e, "daemon exited with error");
         std::process::exit(1);
     }

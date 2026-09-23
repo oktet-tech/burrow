@@ -4,6 +4,7 @@ use std::time::{Instant, SystemTime};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
+use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
 
 use crate::common::log_broadcast::LogBroadcast;
@@ -13,12 +14,8 @@ use crate::ipc::protocol::{self, DaemonInfo, Request, RpcNotification, RpcReques
 use super::manager::TunnelManager;
 use super::DaemonError;
 
-/// Bind the IPC socket and serve requests until daemon.shutdown.
-pub async fn run(
-    socket_path: &Path,
-    mgr: TunnelManager,
-    broadcast: LogBroadcast,
-) -> Result<(), DaemonError> {
+/// Bind the IPC socket, readable only by the current user.
+pub fn bind(socket_path: &Path) -> Result<UnixListener, DaemonError> {
     let listener = UnixListener::bind(socket_path)?;
 
     #[cfg(unix)]
@@ -26,6 +23,17 @@ pub async fn run(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
     }
+    Ok(listener)
+}
+
+/// Serve requests until daemon.shutdown, SIGTERM or SIGINT.
+pub async fn run(
+    listener: UnixListener,
+    mgr: TunnelManager,
+    broadcast: LogBroadcast,
+) -> Result<(), DaemonError> {
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sigint = signal(SignalKind::interrupt())?;
 
     let started = Instant::now();
     let started_epoch = SystemTime::now()
@@ -62,6 +70,14 @@ pub async fn run(
                 if *shutdown_rx.borrow() {
                     break;
                 }
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("received SIGTERM");
+                break;
+            }
+            _ = sigint.recv() => {
+                tracing::info!("received SIGINT");
+                break;
             }
         }
     }
