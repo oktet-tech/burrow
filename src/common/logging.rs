@@ -1,9 +1,13 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, IsTerminal, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 const MAX_LOG_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 const MAX_ROTATED: u32 = 5;
+/// How often a writer checks whether the path now names a different file.
+const REOPEN_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Platform-appropriate log file path.
 ///
@@ -50,36 +54,61 @@ fn rotate_if_needed(path: &PathBuf) -> io::Result<()> {
     Ok(())
 }
 
-/// Append-only log file that rotates once it grows past MAX_LOG_SIZE, so a
-/// long-running daemon can't grow it without bound.
+/// Append-only log file shared by the daemon and GUI processes.
+///
+/// Only the rotating owner (the daemon) renames files, so two writers can't
+/// shift the rotation chain twice. Every writer notices when the path names
+/// a new file and reopens it, so nobody keeps appending to a rotated-away
+/// (and eventually deleted) file.
 struct RotatingFile {
     path: PathBuf,
     file: File,
     size: u64,
+    ino: u64,
+    rotates: bool,
+    last_check: Instant,
 }
 
 impl RotatingFile {
-    fn open(path: PathBuf) -> io::Result<Self> {
+    fn open(path: PathBuf, rotates: bool) -> io::Result<Self> {
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        let size = file.metadata()?.len();
-        Ok(Self { path, file, size })
+        let meta = file.metadata()?;
+        Ok(Self {
+            path,
+            file,
+            size: meta.len(),
+            ino: meta.ino(),
+            rotates,
+            last_check: Instant::now(),
+        })
     }
 
-    fn rotate(&mut self) -> io::Result<()> {
-        // Checks the on-disk size: another process sharing the file may
-        // already have rotated it.
-        rotate_if_needed(&self.path)?;
-        self.file = OpenOptions::new().create(true).append(true).open(&self.path)?;
-        self.size = self.file.metadata()?.len();
+    fn reopen(&mut self) -> io::Result<()> {
+        *self = Self::open(std::mem::take(&mut self.path), self.rotates)?;
         Ok(())
+    }
+
+    fn reopen_if_replaced(&mut self) {
+        if self.last_check.elapsed() < REOPEN_CHECK_INTERVAL {
+            return;
+        }
+        self.last_check = Instant::now();
+        let replaced = fs::metadata(&self.path).map_or(true, |m| m.ino() != self.ino);
+        if replaced {
+            let _ = self.reopen();
+        }
     }
 }
 
 impl Write for RotatingFile {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.size >= MAX_LOG_SIZE && self.rotate().is_err() {
-            // Keep logging to the current file; retry after another full cycle.
-            self.size = 0;
+        self.reopen_if_replaced();
+        if self.rotates && self.size >= MAX_LOG_SIZE {
+            let rotated = rotate_if_needed(&self.path).and_then(|()| self.reopen());
+            if rotated.is_err() {
+                // Keep logging to the current file; retry after another full cycle.
+                self.size = 0;
+            }
         }
         let n = self.file.write(buf)?;
         self.size += n as u64;
@@ -92,24 +121,24 @@ impl Write for RotatingFile {
 }
 
 /// Set up tracing with file output, plus stderr when it is a terminal.
-/// The log file rotates at startup and whenever it exceeds the size limit.
-/// When `broadcast` is provided, log events are also pushed into the broadcast
-/// channel for IPC subscribers (daemon mode).
+/// When `broadcast` is provided (daemon mode), log events are also pushed to
+/// IPC subscribers, and this process owns log rotation.
 pub fn init_logging(broadcast: Option<&super::log_broadcast::LogBroadcast>) {
     let path = log_path();
+    let owns_rotation = broadcast.is_some();
 
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
 
-    if let Err(e) = rotate_if_needed(&path) {
+    if owns_rotation && let Err(e) = rotate_if_needed(&path) {
         eprintln!("warning: log rotation failed: {e}");
     }
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_env("BURROW_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
-    let file = RotatingFile::open(path.clone());
+    let file = RotatingFile::open(path.clone(), owns_rotation);
 
     let broadcast_layer = broadcast.map(|b| b.layer());
 
@@ -237,11 +266,37 @@ mod tests {
         let path = dir.path().join("burrow.log");
         fs::write(&path, vec![b'x'; MAX_LOG_SIZE as usize]).unwrap();
 
-        let mut file = RotatingFile::open(path.clone()).unwrap();
+        let mut file = RotatingFile::open(path.clone(), true).unwrap();
         file.write_all(b"fresh line\n").unwrap();
 
         assert!(dir.path().join("burrow.log.1").exists());
         assert_eq!(fs::read_to_string(&path).unwrap(), "fresh line\n");
+    }
+
+    #[test]
+    fn non_owner_never_rotates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("burrow.log");
+        fs::write(&path, vec![b'x'; MAX_LOG_SIZE as usize]).unwrap();
+
+        let mut file = RotatingFile::open(path.clone(), false).unwrap();
+        file.write_all(b"gui line\n").unwrap();
+
+        assert!(!dir.path().join("burrow.log.1").exists());
+    }
+
+    #[test]
+    fn writer_follows_file_rotated_by_another_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("burrow.log");
+        let mut file = RotatingFile::open(path.clone(), false).unwrap();
+
+        fs::rename(&path, dir.path().join("burrow.log.1")).unwrap();
+        fs::write(&path, "").unwrap();
+        file.last_check = Instant::now() - REOPEN_CHECK_INTERVAL;
+        file.write_all(b"after rotation\n").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "after rotation\n");
     }
 
     #[test]
