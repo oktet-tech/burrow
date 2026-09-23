@@ -417,6 +417,7 @@ dependencies = [
  "directories",
  "iced",
  "indexmap",
+ "libc",
  "muda",
  "notify-rust",
  "serde",

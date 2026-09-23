@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
+use crate::common::daemon_spawn::{spawn_daemon, wait_for_socket};
 use crate::daemon;
 use crate::ipc::protocol::{
     DaemonInfo, RpcRequest, RpcResponse, TunnelInfo, TunnelStatus, JSONRPC_VERSION,
@@ -20,29 +21,13 @@ pub fn daemon_start() {
         std::process::exit(1);
     }
 
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("cannot determine executable path: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    let child = match Command::new(&exe)
-        .arg("daemon-foreground")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
+    let pid = match spawn_daemon() {
+        Ok(pid) => pid,
         Err(e) => {
             eprintln!("failed to spawn daemon: {e}");
             std::process::exit(1);
         }
     };
-
-    let pid = child.id();
 
     if wait_for_socket(&socket, Duration::from_secs(3)) {
         println!("daemon started (pid {pid})");
@@ -636,18 +621,6 @@ pub(crate) fn send_rpc(method: &str, params: serde_json::Value) -> Result<RpcRes
 
     let response: RpcResponse = serde_json::from_str(&line)?;
     Ok(response)
-}
-
-/// Poll until the daemon socket accepts connections.
-fn wait_for_socket(socket: &std::path::Path, timeout: Duration) -> bool {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if UnixStream::connect(socket).is_ok() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
 }
 
 fn format_uptime(seconds: u64) -> String {
