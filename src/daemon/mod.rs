@@ -69,6 +69,7 @@ fn cleanup_stale_socket(path: &Path) -> Result<(), DaemonError> {
 /// Start the daemon. Blocks until shutdown is requested via IPC.
 pub async fn run(broadcast: LogBroadcast) -> Result<(), DaemonError> {
     let path = socket_path();
+    let signals = server::ShutdownSignals::install()?;
 
     cleanup_stale_socket(&path)?;
 
@@ -112,7 +113,7 @@ pub async fn run(broadcast: LogBroadcast) -> Result<(), DaemonError> {
 
     tracing::info!("starting daemon, socket: {}", path.display());
 
-    let result = server::run(listener, mgr.clone(), broadcast).await;
+    let result = server::run(listener, mgr.clone(), broadcast, signals).await;
 
     // Save while sessions are live so their uptime is counted, then kill SSH.
     mgr.save_state_now(&state_file).await;

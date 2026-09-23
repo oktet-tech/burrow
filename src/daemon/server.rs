@@ -4,7 +4,7 @@ use std::time::{Instant, SystemTime};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{signal, Signal, SignalKind};
 use tokio::sync::watch;
 
 use crate::common::log_broadcast::LogBroadcast;
@@ -26,14 +26,34 @@ pub fn bind(socket_path: &Path) -> Result<UnixListener, DaemonError> {
     Ok(listener)
 }
 
+/// SIGTERM/SIGINT listeners. Created before any SSH is spawned: once
+/// registered, a signal no longer kills the process outright, so an early
+/// stop still goes through cleanup.
+pub struct ShutdownSignals {
+    term: Signal,
+    int: Signal,
+}
+
+impl ShutdownSignals {
+    pub fn install() -> Result<Self, DaemonError> {
+        Ok(Self {
+            term: signal(SignalKind::terminate())?,
+            int: signal(SignalKind::interrupt())?,
+        })
+    }
+}
+
 /// Serve requests until daemon.shutdown, SIGTERM or SIGINT.
 pub async fn run(
     listener: UnixListener,
     mgr: TunnelManager,
     broadcast: LogBroadcast,
+    signals: ShutdownSignals,
 ) -> Result<(), DaemonError> {
-    let mut sigterm = signal(SignalKind::terminate())?;
-    let mut sigint = signal(SignalKind::interrupt())?;
+    let ShutdownSignals {
+        term: mut sigterm,
+        int: mut sigint,
+    } = signals;
 
     let started = Instant::now();
     let started_epoch = SystemTime::now()
