@@ -54,9 +54,9 @@ pub fn format_log_line(event: &LogEvent) -> String {
 }
 
 /// Build full text content from the log buffer.
-pub fn build_log_text(logs: &[LogEvent]) -> String {
+pub fn build_log_text<'a>(logs: impl IntoIterator<Item = &'a LogEvent>) -> String {
     let mut out = String::new();
-    for (i, event) in logs.iter().enumerate() {
+    for (i, event) in logs.into_iter().enumerate() {
         if i > 0 {
             out.push('\n');
         }

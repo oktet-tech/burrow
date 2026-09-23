@@ -1,5 +1,5 @@
-use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::{Duration, Instant};
 
 use iced::futures::SinkExt;
 use iced::widget::{column, container, text, text_editor};
@@ -19,6 +19,9 @@ use super::views::tunnel_form::{
 
 const MAX_LOG_LINES: usize = 1000;
 const ERROR_NOTIFICATION_COOLDOWN_SECS: u64 = 60;
+/// Coalesces log bursts (e.g. the 512-line backlog on connect) into one
+/// re-layout of the log editor.
+const LOG_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
 
 // -- Messages --
 
@@ -71,6 +74,7 @@ pub enum Message {
     // User actions -- logs
     ClearLogs,
     ExportLogs,
+    FlushLogs,
     LogEditorAction(text_editor::Action),
 
     // Action completions
@@ -90,8 +94,10 @@ pub struct BurrowApp {
     window_id: Option<window::Id>,
 
     tunnels: Vec<TunnelInfo>,
-    logs: Vec<LogEvent>,
+    logs: VecDeque<LogEvent>,
     log_content: text_editor::Content,
+    /// Logs arrived since log_content was last rebuilt.
+    logs_dirty: bool,
     daemon_connected: bool,
     client: Option<GuiIpcClient>,
     initial_fetch_done: bool,
@@ -123,8 +129,9 @@ impl BurrowApp {
                 window_id: None,
 
                 tunnels: Vec::new(),
-                logs: Vec::new(),
+                logs: VecDeque::new(),
                 log_content: text_editor::Content::new(),
+                logs_dirty: false,
                 daemon_connected: false,
                 client: None,
                 initial_fetch_done: false,
@@ -179,10 +186,11 @@ impl BurrowApp {
                     notifications::network_changed();
                 }
                 if self.logs.len() >= MAX_LOG_LINES {
-                    self.logs.remove(0);
+                    self.logs.pop_front();
                 }
-                self.logs.push(event);
-                self.rebuild_log_content();
+                self.logs.push_back(event);
+                // Rebuilt lazily by FlushLogs, and only while the window is open.
+                self.logs_dirty = true;
                 Task::none()
             }
             // Tray menu dispatch
@@ -313,6 +321,14 @@ impl BurrowApp {
             Message::ClearLogs => {
                 self.logs.clear();
                 self.log_content = text_editor::Content::new();
+                self.logs_dirty = false;
+                Task::none()
+            }
+            Message::FlushLogs => {
+                // Rebuilding drops the selection; wait until the user is done copying.
+                if self.log_content.selection().is_none() {
+                    self.rebuild_log_content();
+                }
                 Task::none()
             }
             Message::ExportLogs => {
@@ -363,12 +379,21 @@ impl BurrowApp {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
+        // Timer exists only while there is something to flush, so an idle
+        // or hidden app gets no periodic wakeups.
+        let log_flush = if self.logs_dirty && self.window_id.is_some() {
+            iced::time::every(LOG_FLUSH_INTERVAL).map(|_| Message::FlushLogs)
+        } else {
+            Subscription::none()
+        };
+
         Subscription::batch([
             Subscription::run(ipc_subscription),
             Subscription::run(tray_event_subscription),
             Subscription::run(notification_click_subscription),
             window::close_requests().map(Message::WindowCloseRequested),
             window::close_events().map(Message::WindowClosed),
+            log_flush,
         ])
     }
 
@@ -437,6 +462,10 @@ impl BurrowApp {
         } else {
             Task::none()
         };
+
+        if self.logs_dirty {
+            self.rebuild_log_content();
+        }
 
         let (_, screen_height) = super::main_screen_size();
         let win_height = (screen_height * 0.75) as f32;
@@ -589,6 +618,7 @@ impl BurrowApp {
     }
 
     fn rebuild_log_content(&mut self) {
+        self.logs_dirty = false;
         let text = super::views::logs::build_log_text(&self.logs);
         self.log_content = text_editor::Content::with_text(&text);
         self.log_content
@@ -646,7 +676,7 @@ impl BurrowApp {
 
 // -- Log export --
 
-fn export_logs(logs: &[LogEvent]) {
+fn export_logs(logs: &VecDeque<LogEvent>) {
     let log_dir = crate::common::logging::log_path()
         .parent()
         .map(|p| p.to_path_buf())
