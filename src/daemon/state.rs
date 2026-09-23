@@ -53,11 +53,12 @@ pub fn state_path() -> PathBuf {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        directories::ProjectDirs::from("", "", "burrow")
-            .expect("cannot determine state directory")
-            .state_dir()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("~/.local/state/burrow"))
+        let dirs = directories::ProjectDirs::from("", "", "burrow")
+            .expect("cannot determine state directory");
+        // state_dir() is None off Linux; `~` isn't expanded by the fs, so
+        // fall back to the data dir rather than a literal "~" path.
+        dirs.state_dir()
+            .unwrap_or_else(|| dirs.data_local_dir())
             .join("state.json")
     }
 }
