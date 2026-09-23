@@ -1,12 +1,16 @@
 use std::net::TcpListener;
 use std::process::Stdio;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use crate::config::schema::{Defaults, TunnelConfig, TunnelMode, TunnelType};
 use crate::ipc::protocol::{TunnelInfo, TunnelStats, TunnelStatus};
+
+use super::monitor::Readiness;
+
+/// How long a reverse tunnel's SSH must survive before it counts as up.
+const REVERSE_READY_AFTER: Duration = Duration::from_secs(5);
 
 pub struct Tunnel {
     pub id: String,
@@ -132,7 +136,7 @@ impl Tunnel {
     }
 
     /// Start the SSH process and return the Child handle for external monitoring.
-    /// Sets status to Connected. Caller is responsible for watching the child.
+    /// Status stays Connecting until the monitor reports readiness.
     pub fn start(&mut self) -> Result<tokio::process::Child, std::io::Error> {
         self.status = TunnelStatus::Connecting;
         self.last_error = None;
@@ -181,13 +185,29 @@ impl Tunnel {
         };
 
         self.pid = child.id();
+        tracing::info!(tunnel_id = %self.id, pid = ?self.pid, "SSH process started");
+
+        Ok(child)
+    }
+
+    /// How the monitor should detect that forwarding is up.
+    pub(super) fn readiness(&self) -> Readiness {
+        match self.config.tunnel_type {
+            TunnelType::Local | TunnelType::Socks => Readiness::LocalPort(self.config.local_port),
+            TunnelType::Reverse => Readiness::After(REVERSE_READY_AFTER),
+        }
+    }
+
+    /// Record that forwarding is up. No-op unless still connecting.
+    pub fn mark_connected(&mut self) {
+        if self.status != TunnelStatus::Connecting {
+            return;
+        }
         self.status = TunnelStatus::Connected;
         self.total_connections += 1;
         self.session_start = Some(Instant::now());
         self.last_connected = Some(chrono::Utc::now().to_rfc3339());
-        tracing::info!(tunnel_id = %self.id, pid = ?self.pid, "SSH process started");
-
-        Ok(child)
+        tracing::info!(tunnel_id = %self.id, "tunnel connected");
     }
 
     /// Record that the SSH process exited. Any exit is unexpected for -N tunnels.
@@ -288,8 +308,8 @@ impl Tunnel {
     }
 
     /// Spawn SSH process, wait for it to exit, update status.
-    /// Convenience method for standalone use; the manager uses start() + monitor instead.
-    #[allow(dead_code)]
+    /// Test helper; the manager uses start() + Monitor instead.
+    #[cfg(test)]
     pub async fn spawn(&mut self) {
         let mut child = match self.start() {
             Ok(c) => c,
@@ -315,7 +335,9 @@ impl Tunnel {
     }
 }
 
-pub(super) async fn read_stderr(handle: Option<tokio::process::ChildStderr>) -> Option<String> {
+#[cfg(test)]
+async fn read_stderr(handle: Option<tokio::process::ChildStderr>) -> Option<String> {
+    use tokio::io::AsyncReadExt;
     let mut stderr = handle?;
     let mut buf = String::new();
     // Process has already exited, so this reads buffered output then hits EOF

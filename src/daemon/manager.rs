@@ -10,9 +10,10 @@ use tokio::task::JoinHandle;
 use crate::config::schema::{Config, TunnelMode};
 use crate::ipc::protocol::{BulkResult, ReloadResult, TunnelInfo, TunnelStatus};
 
+use super::monitor::{Monitor, MonitorEvent};
 use super::state::{self, PersistedTunnel, PersistedTunnelStats, State};
 use super::stub;
-use super::tunnel::{read_stderr, Tunnel};
+use super::tunnel::Tunnel;
 
 const MAX_BACKOFF_SECS: u64 = 300;
 /// A session that stays up this long counts as healthy and resets backoff.
@@ -20,9 +21,8 @@ const STABLE_SESSION_SECS: u64 = 60;
 
 struct ManagedTunnel {
     tunnel: Tunnel,
-    /// Handle to the task monitoring SSH process exit. Aborting it kills SSH
-    /// via kill_on_drop on the Child held inside the task's future.
-    monitor: Option<JoinHandle<()>>,
+    /// Supervisor of the running SSH process. Dropping it kills SSH.
+    monitor: Option<Monitor>,
     /// Handle to a pending reconnection timer. Aborting cancels reconnect.
     reconnect_task: Option<JoinHandle<()>>,
     /// Consecutive short-lived sessions. Drives backoff.
@@ -34,16 +34,9 @@ struct ManagedTunnel {
     stub_handle: Option<stub::StubHandle>,
 }
 
-struct ExitEvent {
-    id: String,
-    generation: u64,
-    code: Option<i32>,
-    stderr: Option<String>,
-}
-
 struct Inner {
     tunnels: IndexMap<String, ManagedTunnel>,
-    exit_tx: mpsc::UnboundedSender<ExitEvent>,
+    exit_tx: mpsc::UnboundedSender<MonitorEvent>,
     state_dirty: Arc<Notify>,
     event_tx: broadcast::Sender<Vec<TunnelInfo>>,
     daemon_started: String,
@@ -90,7 +83,7 @@ fn next_failure_count(current: u32, session_secs: u64) -> u32 {
 /// session will survive authentication.
 fn start_tunnel(
     mt: &mut ManagedTunnel,
-    exit_tx: &mpsc::UnboundedSender<ExitEvent>,
+    exit_tx: &mpsc::UnboundedSender<MonitorEvent>,
 ) -> Result<(), String> {
     let id = mt.tunnel.id.clone();
 
@@ -100,30 +93,19 @@ fn start_tunnel(
         return Err(format!("tunnel '{id}' is already connected"));
     }
 
-    let mut child = mt
+    let child = mt
         .tunnel
         .start()
         .map_err(|e| format!("failed to start tunnel '{id}': {e}"))?;
 
-    let stderr_handle = child.stderr.take();
-    let tunnel_id = id;
-    let exit_tx = exit_tx.clone();
     mt.generation += 1;
-    let generation = mt.generation;
-
-    let handle = tokio::spawn(async move {
-        let wait_result = child.wait().await;
-        let stderr = read_stderr(stderr_handle).await;
-        let code = wait_result.ok().and_then(|s| s.code());
-        let _ = exit_tx.send(ExitEvent {
-            id: tunnel_id,
-            generation,
-            code,
-            stderr,
-        });
-    });
-
-    mt.monitor = Some(handle);
+    mt.monitor = Some(Monitor::spawn(
+        id,
+        mt.generation,
+        child,
+        mt.tunnel.readiness(),
+        exit_tx.clone(),
+    ));
     Ok(())
 }
 
@@ -141,7 +123,7 @@ impl TunnelManager {
         }));
 
         let mgr = Self { inner };
-        Self::spawn_exit_handler(Arc::clone(&mgr.inner), exit_rx, mgr.clone());
+        Self::spawn_exit_handler(exit_rx, mgr.clone());
         mgr
     }
 
@@ -198,8 +180,9 @@ impl TunnelManager {
             .get_mut(id)
             .ok_or_else(|| format!("tunnel '{id}' not found"))?;
 
-        if let Some(handle) = mt.monitor.take() {
-            handle.abort();
+        // Wait for SSH to be reaped so its port is free for a stub or reconnect.
+        if let Some(monitor) = mt.monitor.take() {
+            monitor.stop().await;
         }
         if let Some(handle) = mt.reconnect_task.take() {
             handle.abort();
@@ -439,14 +422,12 @@ impl TunnelManager {
 
     /// Disconnect all, then connect all enabled tunnels.
     pub async fn restart_all(&self) -> BulkResult {
+        // disconnect() waits for SSH to exit, so ports are free here.
         self.disconnect_all().await;
-        // SSH processes need time to exit and release ports before we
-        // reconnect, otherwise the new connections hit port conflicts.
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         self.connect_all().await
     }
 
-    /// Reset backoff and reconnect auto-mode tunnels in error/disconnected state.
+    /// Reset backoff and reconnect auto-mode tunnels in error state.
     /// Called on network change to recover tunnels quickly instead of waiting
     /// for the exponential backoff timer.
     pub async fn reconnect_errored(&self) {
@@ -454,10 +435,10 @@ impl TunnelManager {
             let mut inner = self.inner.lock().await;
             let mut candidates = Vec::new();
             for (id, mt) in &mut inner.tunnels {
+                // Disconnected means the user stopped it; leave it alone.
                 if mt.tunnel.enabled
                     && mt.tunnel.config().mode == TunnelMode::Auto
-                    && (mt.tunnel.status == TunnelStatus::Error
-                        || mt.tunnel.status == TunnelStatus::Disconnected)
+                    && mt.tunnel.status == TunnelStatus::Error
                 {
                     mt.consecutive_failures = 0;
                     if let Some(handle) = mt.reconnect_task.take() {
@@ -733,70 +714,68 @@ impl TunnelManager {
         }
     }
 
-    fn spawn_exit_handler(
-        inner: Arc<Mutex<Inner>>,
-        mut exit_rx: mpsc::UnboundedReceiver<ExitEvent>,
-        mgr: TunnelManager,
-    ) {
+    fn spawn_exit_handler(mut exit_rx: mpsc::UnboundedReceiver<MonitorEvent>, mgr: TunnelManager) {
         tokio::spawn(async move {
             while let Some(event) = exit_rx.recv().await {
-                let needs_stub = {
-                    let mut state = inner.lock().await;
-                    let Some(mt) = state.tunnels.get_mut(&event.id) else {
-                        continue;
-                    };
-                    if event.generation != mt.generation {
-                        tracing::debug!(tunnel_id = %event.id, "ignoring exit of stale SSH process");
-                        continue;
-                    }
-
-                    mt.monitor = None;
-                    let session_secs = mt.tunnel.session_start_elapsed();
-                    mt.tunnel.record_exit(event.code, event.stderr);
-                    mt.consecutive_failures = next_failure_count(mt.consecutive_failures, session_secs);
-
-                    // Auto-mode: schedule reconnect with backoff
-                    let result = if mt.tunnel.should_reconnect() {
-                        let delay = backoff_delay(mt.consecutive_failures);
-
-                        tracing::info!(
-                            tunnel_id = %event.id,
-                            delay_secs = delay.as_secs(),
-                            failures = mt.consecutive_failures,
-                            "scheduling reconnect"
-                        );
-
-                        let reconnect_inner = Arc::clone(&inner);
-                        let tunnel_id = event.id.clone();
-
-                        let handle = tokio::spawn(async move {
-                            Self::reconnect_loop(reconnect_inner, tunnel_id, delay).await;
-                        });
-
-                        mt.reconnect_task = Some(handle);
-                        false
-                    } else {
-                        // On-demand: re-bind stub listener after SSH exits
-                        mt.tunnel.config().mode == TunnelMode::OnDemand
-                            && mt.tunnel.enabled
-                            && mt.stub_handle.is_none()
-                    };
-
-                    state.notify_changed();
-                    result
-                }; // lock released
-
-                if needs_stub {
-                    let mgr = mgr.clone();
-                    let id = event.id.clone();
-                    tokio::spawn(async move {
-                        // Brief delay for OS to release the port
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        mgr.restart_stub_if_needed(&id).await;
-                    });
+                let mut state = mgr.inner.lock().await;
+                let Some(mt) = state.tunnels.get_mut(event.id()) else {
+                    continue;
+                };
+                if event.generation() != mt.generation {
+                    tracing::debug!(tunnel_id = %event.id(), "ignoring event from stale SSH process");
+                    continue;
                 }
+
+                match event {
+                    MonitorEvent::Ready { .. } => mt.tunnel.mark_connected(),
+                    MonitorEvent::Exited { id, code, stderr, .. } => {
+                        Self::handle_exit(&mgr, mt, id, code, stderr);
+                    }
+                }
+                state.notify_changed();
             }
         });
+    }
+
+    /// Record an SSH exit and schedule recovery: reconnect for auto mode,
+    /// stub re-bind for on-demand. Both back off on repeated short sessions.
+    fn handle_exit(
+        mgr: &TunnelManager,
+        mt: &mut ManagedTunnel,
+        id: String,
+        code: Option<i32>,
+        stderr: Option<String>,
+    ) {
+        mt.monitor = None;
+        let session_secs = mt.tunnel.session_start_elapsed();
+        mt.tunnel.record_exit(code, stderr);
+        mt.consecutive_failures = next_failure_count(mt.consecutive_failures, session_secs);
+        let delay = backoff_delay(mt.consecutive_failures);
+
+        if mt.tunnel.should_reconnect() {
+            tracing::info!(
+                tunnel_id = %id,
+                delay_secs = delay.as_secs(),
+                failures = mt.consecutive_failures,
+                "scheduling reconnect"
+            );
+            let inner = Arc::clone(&mgr.inner);
+            mt.reconnect_task = Some(tokio::spawn(Self::reconnect_loop(inner, id, delay)));
+        } else if mt.tunnel.config().mode == TunnelMode::OnDemand
+            && mt.tunnel.enabled
+            && mt.stub_handle.is_none()
+        {
+            tracing::info!(
+                tunnel_id = %id,
+                delay_secs = delay.as_secs(),
+                "scheduling on-demand listener re-bind"
+            );
+            let mgr = mgr.clone();
+            mt.reconnect_task = Some(tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                mgr.restart_stub_if_needed(&id).await;
+            }));
+        }
     }
 
     /// Sleep then attempt reconnection. Retries with increasing backoff
@@ -1016,17 +995,18 @@ mod tests {
     #[tokio::test]
     async fn connect_then_disconnect() {
         let mut config = test_config();
+        let (_dir, fake_ssh) = long_running_fake_ssh();
         let tc = config.tunnel.get_mut("dev-db").unwrap();
-        tc.ssh_binary = Some("sleep".into());
-        tc.host = "60".into();
+        tc.ssh_binary = Some(fake_ssh);
         tc.local_port = 59002;
 
         let mgr = TunnelManager::new();
         mgr.load_tunnels(&config).await;
 
         mgr.connect("dev-db").await.unwrap();
+        // Nothing binds the local port, so it never becomes Connected.
         let info = mgr.get("dev-db").await.unwrap();
-        assert_eq!(info.status, TunnelStatus::Connected);
+        assert_eq!(info.status, TunnelStatus::Connecting);
 
         mgr.disconnect("dev-db").await.unwrap();
         let info = mgr.get("dev-db").await.unwrap();
@@ -1107,7 +1087,7 @@ mod tests {
 
         let exit_tx = mgr.inner.lock().await.exit_tx.clone();
         exit_tx
-            .send(ExitEvent {
+            .send(MonitorEvent::Exited {
                 id: "dev-db".into(),
                 generation: 0,
                 code: Some(255),
@@ -1119,6 +1099,28 @@ mod tests {
         let info = mgr.get("dev-db").await.unwrap();
         mgr.disconnect("dev-db").await.unwrap();
         assert_ne!(info.status, TunnelStatus::Error);
+    }
+
+    #[tokio::test]
+    async fn becomes_connected_when_port_bound() {
+        let mut config = test_config();
+        let (_dir, fake_ssh) = long_running_fake_ssh();
+        let tc = config.tunnel.get_mut("dev-db").unwrap();
+        tc.ssh_binary = Some(fake_ssh);
+        tc.local_port = 59010;
+
+        let mgr = TunnelManager::new();
+        mgr.load_tunnels(&config).await;
+        mgr.connect("dev-db").await.unwrap();
+
+        // Stand in for SSH binding the forward port
+        let _listener = std::net::TcpListener::bind("127.0.0.1:59010").unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        let info = mgr.get("dev-db").await.unwrap();
+        mgr.disconnect("dev-db").await.unwrap();
+        assert_eq!(info.status, TunnelStatus::Connected);
+        assert_eq!(info.stats.unwrap().total_connections, 1);
     }
 
     #[test]
@@ -1204,9 +1206,9 @@ mod tests {
     #[tokio::test]
     async fn connect_resets_backoff() {
         let mut config = test_config();
+        let (_dir, fake_ssh) = long_running_fake_ssh();
         let tc = config.tunnel.get_mut("dev-db").unwrap();
-        tc.ssh_binary = Some("sleep".into());
-        tc.host = "60".into();
+        tc.ssh_binary = Some(fake_ssh);
         tc.local_port = 59007;
 
         let mgr = TunnelManager::new();

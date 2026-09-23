@@ -1,4 +1,5 @@
 pub mod manager;
+mod monitor;
 pub mod network;
 pub mod server;
 pub mod state;

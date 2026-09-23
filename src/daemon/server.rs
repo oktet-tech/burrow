@@ -211,14 +211,8 @@ async fn handle_request(
         },
         Request::TunnelDisconnect { id: tid } => match mgr.disconnect(&tid).await {
             Ok(()) => {
-                // Stub re-bind needs time for the SSH process to die and release the port.
-                // Spawn a delayed task so the IPC response is not blocked.
-                let mgr = mgr.clone();
-                let tid2 = tid.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    mgr.restart_stub_if_needed(&tid2).await;
-                });
+                // disconnect() waited for SSH to exit, so the port is free.
+                mgr.restart_stub_if_needed(&tid).await;
                 RpcResponse::success(id, json!({ "status": "disconnected" }))
             }
             Err(msg) => RpcResponse::error(id, protocol::TUNNEL_NOT_FOUND, msg),
@@ -237,11 +231,7 @@ async fn handle_request(
         }
         Request::TunnelDisconnectAll => {
             let result = mgr.disconnect_all().await;
-            let mgr = mgr.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                mgr.start_on_demand_stubs().await;
-            });
+            mgr.start_on_demand_stubs().await;
             RpcResponse::success(id, result)
         }
         Request::TunnelRestartAll => {
