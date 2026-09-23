@@ -1125,9 +1125,16 @@ mod tests {
         let mgr = TunnelManager::new();
         mgr.load_tunnels(&config).await;
         mgr.connect("dev-db").await.unwrap();
-        tokio::time::sleep(Duration::from_millis(300)).await;
 
-        let info = mgr.get("dev-db").await.unwrap();
+        // Poll: process spawn can be slow when the suite runs in parallel
+        let mut info = mgr.get("dev-db").await.unwrap();
+        for _ in 0..50 {
+            if info.status == TunnelStatus::Connected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            info = mgr.get("dev-db").await.unwrap();
+        }
         mgr.disconnect("dev-db").await.unwrap();
         assert_eq!(info.status, TunnelStatus::Connected);
         assert_eq!(info.stats.unwrap().total_connections, 1);
