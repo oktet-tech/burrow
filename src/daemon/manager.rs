@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use indexmap::IndexMap;
 use tokio::sync::{broadcast, mpsc, Mutex, Notify};
@@ -33,6 +33,38 @@ struct ManagedTunnel {
     generation: u64,
     /// On-demand stub listener. Drop aborts and releases the port.
     stub_handle: Option<stub::StubHandle>,
+    /// When the pending reconnect or stub re-bind fires, for display.
+    next_retry_at: Option<SystemTime>,
+}
+
+impl ManagedTunnel {
+    fn new(tunnel: Tunnel) -> Self {
+        Self {
+            tunnel,
+            monitor: None,
+            reconnect_task: None,
+            consecutive_failures: 0,
+            generation: 0,
+            stub_handle: None,
+            next_retry_at: None,
+        }
+    }
+
+    /// Snapshot for clients. Adds what only the manager knows: whether an
+    /// on-demand listener is waiting, and when the next retry is due.
+    fn info(&self) -> TunnelInfo {
+        let mut info = self.tunnel.to_info();
+        if self.stub_handle.is_some() && self.monitor.is_none() {
+            info.status = TunnelStatus::Standby;
+        }
+        if self.tunnel.enabled {
+            info.next_retry_at = self
+                .next_retry_at
+                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs());
+        }
+        info
+    }
 }
 
 struct Inner {
@@ -53,7 +85,7 @@ impl Inner {
         let snapshot: Vec<TunnelInfo> = self
             .tunnels
             .values()
-            .map(|mt| mt.tunnel.to_info())
+            .map(ManagedTunnel::info)
             .collect();
         // Ignore send errors -- no subscribers is fine
         let _ = self.event_tx.send(snapshot);
@@ -107,6 +139,7 @@ fn start_tunnel(
     })?;
 
     mt.generation += 1;
+    mt.next_retry_at = None;
     mt.monitor = Some(Monitor::spawn(id, mt.generation, child, exit_tx.clone()));
     Ok(())
 }
@@ -134,17 +167,7 @@ impl TunnelManager {
         let mut state = self.inner.lock().await;
         for (id, tunnel_config) in &config.tunnel {
             let tunnel = Tunnel::new(id.clone(), tunnel_config.clone(), &config.defaults);
-            state.tunnels.insert(
-                id.clone(),
-                ManagedTunnel {
-                    tunnel,
-                    monitor: None,
-                    reconnect_task: None,
-                    consecutive_failures: 0,
-                    generation: 0,
-                    stub_handle: None,
-                },
-            );
+            state.tunnels.insert(id.clone(), ManagedTunnel::new(tunnel));
         }
         tracing::info!(count = state.tunnels.len(), "loaded tunnels from config");
     }
@@ -192,6 +215,7 @@ impl TunnelManager {
 
         mt.consecutive_failures = 0;
         mt.generation += 1;
+        mt.next_retry_at = None;
         mt.tunnel.record_disconnect();
         state.notify_changed();
         Ok(())
@@ -358,6 +382,9 @@ impl TunnelManager {
                 let mut state = self.inner.lock().await;
                 if let Some(mt) = state.tunnels.get_mut(id) {
                     mt.stub_handle = Some(handle);
+                    mt.next_retry_at = None;
+                    // Status now reads as Standby
+                    state.notify_changed();
                 }
             }
             Err(e) => {
@@ -479,14 +506,14 @@ impl TunnelManager {
         state
             .tunnels
             .values()
-            .map(|mt| mt.tunnel.to_info())
+            .map(ManagedTunnel::info)
             .collect()
     }
 
     /// Snapshot of a single tunnel.
     pub async fn get(&self, id: &str) -> Option<TunnelInfo> {
         let state = self.inner.lock().await;
-        state.tunnels.get(id).map(|mt| mt.tunnel.to_info())
+        state.tunnels.get(id).map(ManagedTunnel::info)
     }
 
     /// Subscribe to tunnel state change events for push-based GUI updates.
@@ -565,17 +592,7 @@ impl TunnelManager {
                 let tunnel_config = &config.tunnel[id];
                 let tunnel =
                     Tunnel::new(id.clone(), tunnel_config.clone(), &config.defaults);
-                state.tunnels.insert(
-                    id.clone(),
-                    ManagedTunnel {
-                        tunnel,
-                        monitor: None,
-                        reconnect_task: None,
-                        consecutive_failures: 0,
-                        generation: 0,
-                        stub_handle: None,
-                    },
-                );
+                state.tunnels.insert(id.clone(), ManagedTunnel::new(tunnel));
                 result.added.push(id.clone());
                 tracing::info!(tunnel_id = %id, "added tunnel");
             }
@@ -777,6 +794,7 @@ impl TunnelManager {
         mt.tunnel.record_exit(code, stderr);
         mt.consecutive_failures = next_failure_count(mt.consecutive_failures, session_secs);
         let delay = backoff_delay(mt.consecutive_failures);
+        mt.next_retry_at = None;
 
         if mt.tunnel.should_reconnect() {
             tracing::info!(
@@ -789,6 +807,7 @@ impl TunnelManager {
             if let Some(old) = mt.reconnect_task.take() {
                 old.abort();
             }
+            mt.next_retry_at = Some(SystemTime::now() + delay);
             mt.reconnect_task = Some(tokio::spawn(Self::reconnect_loop(inner, id, delay)));
         } else if mt.tunnel.config().mode == TunnelMode::OnDemand
             && mt.tunnel.enabled
@@ -803,6 +822,7 @@ impl TunnelManager {
             if let Some(old) = mt.reconnect_task.take() {
                 old.abort();
             }
+            mt.next_retry_at = Some(SystemTime::now() + delay);
             mt.reconnect_task = Some(tokio::spawn(async move {
                 tokio::time::sleep(delay).await;
                 mgr.restart_stub_if_needed(&id).await;
@@ -843,13 +863,15 @@ impl TunnelManager {
                     "attempting reconnect"
                 );
 
-                match start_tunnel(mt, &exit_tx) {
+                let retry = match start_tunnel(mt, &exit_tx) {
                     Ok(()) => false,
-                    Err(e) => {
-                        // start failed synchronously (no child spawned), so the
-                        // exit handler won't fire. We must retry ourselves.
+                    // start failed synchronously (no child spawned), so the
+                    // exit handler won't fire. We must retry ourselves, unless
+                    // the failure (e.g. port conflict) rules reconnecting out.
+                    Err(e) if mt.tunnel.should_reconnect() => {
                         mt.consecutive_failures += 1;
                         delay = backoff_delay(mt.consecutive_failures);
+                        mt.next_retry_at = Some(SystemTime::now() + delay);
                         tracing::warn!(
                             tunnel_id = %id,
                             error = %e,
@@ -858,7 +880,14 @@ impl TunnelManager {
                         );
                         true
                     }
-                }
+                    Err(e) => {
+                        tracing::warn!(tunnel_id = %id, error = %e, "reconnect failed, giving up");
+                        false
+                    }
+                };
+                // Clients see Connecting, or the new error and retry time.
+                state.notify_changed();
+                retry
             }; // lock released
 
             if !should_retry {
@@ -1161,6 +1190,44 @@ mod tests {
         mgr.disconnect("dev-db").await.unwrap();
         assert_eq!(info.status, TunnelStatus::Connected);
         assert_eq!(info.stats.unwrap().total_connections, 1);
+    }
+
+    #[tokio::test]
+    async fn on_demand_listener_reports_standby() {
+        let mut config = test_config();
+        config.tunnel.get_mut("proxy").unwrap().local_port = 59011;
+
+        let mgr = TunnelManager::new();
+        mgr.load_tunnels(&config).await;
+        mgr.start_on_demand_stubs().await;
+
+        let info = mgr.get("proxy").await.unwrap();
+        assert_eq!(info.status, TunnelStatus::Standby);
+        mgr.disable("proxy").await.unwrap();
+        assert_eq!(mgr.get("proxy").await.unwrap().status, TunnelStatus::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn failing_tunnel_reports_next_retry() {
+        let mut config = test_config();
+        let tc = config.tunnel.get_mut("dev-db").unwrap();
+        tc.ssh_binary = Some("false".into());
+        tc.local_port = 59012;
+
+        let mgr = TunnelManager::new();
+        mgr.load_tunnels(&config).await;
+        mgr.connect("dev-db").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let retry_at = mgr.get("dev-db").await.unwrap().next_retry_at.unwrap();
+        assert!(retry_at >= now && retry_at <= now + 3);
+
+        mgr.disconnect("dev-db").await.unwrap();
+        assert!(mgr.get("dev-db").await.unwrap().next_retry_at.is_none());
     }
 
     #[test]

@@ -81,39 +81,56 @@ where
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
         let meta = event.metadata();
 
-        let mut visitor = MessageVisitor::default();
+        let mut visitor = FieldVisitor::default();
         event.record(&mut visitor);
 
         let timestamp = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
         let level = meta.level().to_string();
         let target = meta.target().to_string();
-        let message = visitor.message.unwrap_or_default();
+        let message = visitor.message.unwrap_or_default() + &visitor.extra;
 
         self.broadcast.push(LogLine {
             timestamp,
             level,
             target,
             message,
+            tunnel_id: visitor.tunnel_id,
         });
     }
 }
 
+/// Splits an event into its message, the tunnel it concerns, and the
+/// remaining fields rendered as ` key=value` (e.g. `error=...`), which would
+/// otherwise never reach IPC subscribers.
 #[derive(Default)]
-struct MessageVisitor {
+struct FieldVisitor {
     message: Option<String>,
+    tunnel_id: Option<String>,
+    extra: String,
 }
 
-impl Visit for MessageVisitor {
-    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "message" {
-            self.message = Some(format!("{:?}", value));
+impl FieldVisitor {
+    fn record(&mut self, name: &str, value: String) {
+        match name {
+            "message" => self.message = Some(value),
+            "tunnel_id" => self.tunnel_id = Some(value),
+            _ => {
+                self.extra.push(' ');
+                self.extra.push_str(name);
+                self.extra.push('=');
+                self.extra.push_str(&value);
+            }
         }
+    }
+}
+
+impl Visit for FieldVisitor {
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        self.record(field.name(), format!("{value:?}"));
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
-        if field.name() == "message" {
-            self.message = Some(value.to_string());
-        }
+        self.record(field.name(), value.to_string());
     }
 }
 
@@ -131,6 +148,7 @@ mod tests {
                 level: "INFO".into(),
                 target: "test".into(),
                 message: format!("msg{i}"),
+                tunnel_id: None,
             });
         }
 
@@ -150,12 +168,28 @@ mod tests {
                 level: "DEBUG".into(),
                 target: "t".into(),
                 message: format!("m{i}"),
+                tunnel_id: None,
             });
         }
         let recent = bc.recent(2);
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0].message, "m3");
         assert_eq!(recent[1].message, "m4");
+    }
+
+    #[test]
+    fn layer_extracts_tunnel_id_and_fields() {
+        use tracing_subscriber::prelude::*;
+
+        let bc = LogBroadcast::new(4);
+        let subscriber = tracing_subscriber::registry().with(bc.layer());
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(tunnel_id = %"db", error = %"refused", "connect failed");
+        });
+
+        let line = &bc.recent(1)[0];
+        assert_eq!(line.tunnel_id.as_deref(), Some("db"));
+        assert_eq!(line.message, "connect failed error=refused");
     }
 
     #[tokio::test]
@@ -168,6 +202,7 @@ mod tests {
             level: "INFO".into(),
             target: "test".into(),
             message: "hello".into(),
+            tunnel_id: None,
         });
 
         let line = rx.recv().await.unwrap();

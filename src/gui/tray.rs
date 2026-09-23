@@ -25,7 +25,12 @@ pub fn aggregate_status(tunnels: &[TunnelInfo], daemon_connected: bool) -> Aggre
         return AggregateStatus::AnyError;
     }
 
-    let enabled: Vec<_> = tunnels.iter().filter(|t| t.enabled).collect();
+    // Standby tunnels are healthy and idle by design; they shouldn't turn
+    // the icon yellow.
+    let enabled: Vec<_> = tunnels
+        .iter()
+        .filter(|t| t.enabled && t.status != TunnelStatus::Standby)
+        .collect();
     if enabled.is_empty() {
         return AggregateStatus::NoneConnected;
     }
@@ -128,11 +133,13 @@ fn tunnel_label(t: &TunnelInfo) -> String {
         TunnelStatus::Disconnected => "\u{25CB}", // open circle
         TunnelStatus::Connecting => "\u{25D0}",   // half circle
         TunnelStatus::Error => "\u{26A0}",        // warning
+        TunnelStatus::Standby => "\u{25CC}",      // dotted circle
     };
 
     let detail = match t.status {
         TunnelStatus::Connected => format!("localhost:{}", t.local_port),
         TunnelStatus::Disconnected => "disconnected".into(),
+        TunnelStatus::Standby => "standby".into(),
         TunnelStatus::Connecting => "connecting...".into(),
         TunnelStatus::Error => {
             let msg = t.last_error.as_deref().unwrap_or("unknown");
@@ -209,6 +216,7 @@ mod tests {
             enabled,
             last_error: None,
             stats: None,
+            next_retry_at: None,
         }
     }
 
@@ -258,6 +266,15 @@ mod tests {
             make_tunnel("b", TunnelStatus::Disconnected, true),
         ];
         assert_eq!(aggregate_status(&tunnels, true), AggregateStatus::SomeConnected);
+    }
+
+    #[test]
+    fn standby_does_not_downgrade_status() {
+        let tunnels = vec![
+            make_tunnel("a", TunnelStatus::Connected, true),
+            make_tunnel("b", TunnelStatus::Standby, true),
+        ];
+        assert_eq!(aggregate_status(&tunnels, true), AggregateStatus::AllConnected);
     }
 
     #[test]

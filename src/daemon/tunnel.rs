@@ -302,6 +302,7 @@ impl Tunnel {
                     + self.session_start_elapsed(),
                 reconnect_count: self.reconnect_count,
             }),
+            next_retry_at: None,
         }
     }
 

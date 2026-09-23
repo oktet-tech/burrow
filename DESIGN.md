@@ -289,13 +289,14 @@ JSON-RPC 2.0 over Unix socket, newline-delimited.
         "name": "Dev Database",
         "type": "local",
         "mode": "auto",
-        "status": "connected",  // connected | disconnected | connecting | error
+        "status": "connected",  // connected | disconnected | connecting | error | standby (on-demand listener waiting)
         "local_port": 5432,
         "remote": "db.internal:5432",
         "host": "bastion.example.com",
         "enabled": true,
         "last_error": null,
-        "stats": { ... }
+        "stats": { ... },
+        "next_retry_at": 1790170000  // unix seconds; present while a retry is scheduled
       }
     ]
   }

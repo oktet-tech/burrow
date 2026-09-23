@@ -68,6 +68,9 @@ pub struct LogLine {
     pub level: String,
     pub target: String,
     pub message: String,
+    /// Tunnel the event is about, so clients can show per-tunnel logs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel_id: Option<String>,
 }
 
 impl RpcResponse {
@@ -119,6 +122,8 @@ pub enum TunnelStatus {
     Disconnected,
     Connecting,
     Error,
+    /// On-demand listener is bound; SSH starts on the first connection.
+    Standby,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -149,6 +154,9 @@ pub struct TunnelInfo {
     pub last_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stats: Option<TunnelStats>,
+    /// Unix time (seconds) of the next automatic retry, when one is scheduled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_retry_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -410,6 +418,7 @@ mod tests {
             enabled: true,
             last_error: None,
             stats: None,
+            next_retry_at: None,
         };
         let v = serde_json::to_value(&info).unwrap();
         assert_eq!(v["type"], "local");

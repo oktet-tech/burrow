@@ -521,6 +521,7 @@ fn status_indicator(status: TunnelStatus) -> &'static str {
         TunnelStatus::Disconnected => "\u{25cb} disconnected",
         TunnelStatus::Connecting => "\u{25d0} connecting",
         TunnelStatus::Error => "\u{26a0} error",
+        TunnelStatus::Standby => "\u{25cc} standby",
     }
 }
 
@@ -692,6 +693,7 @@ mod tests {
             enabled: true,
             last_error: last_error.map(String::from),
             stats: None,
+            next_retry_at: None,
         }
     }
 

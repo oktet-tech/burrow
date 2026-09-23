@@ -140,7 +140,7 @@ fn status_indicator(t: &TunnelInfo) -> (&'static str, Color) {
     }
     match t.status {
         TunnelStatus::Connected => ("\u{25CF}", style::CONNECTED),   // filled circle
-        TunnelStatus::Disconnected => ("\u{25CB}", style::DISCONNECTED), // open circle
+        TunnelStatus::Disconnected | TunnelStatus::Standby => ("\u{25CB}", style::DISCONNECTED), // open circle
         TunnelStatus::Connecting => ("\u{25D0}", style::CONNECTING), // half circle
         TunnelStatus::Error => ("\u{26A0}", style::ERROR),           // warning
     }
@@ -170,6 +170,7 @@ fn status_detail(t: &TunnelInfo) -> String {
             None => "connected".into(),
         },
         TunnelStatus::Disconnected => format!("mode: {}", t.mode),
+        TunnelStatus::Standby => "standby".into(),
         TunnelStatus::Connecting => "connecting...".into(),
         TunnelStatus::Error => {
             let msg = t.last_error.as_deref().unwrap_or("unknown error");
@@ -203,7 +204,7 @@ fn action_button(t: &TunnelInfo) -> Element<'_, Message> {
             .style(button::danger)
             .padding([4, 12])
             .into(),
-        TunnelStatus::Disconnected => button(text("Connect").size(13))
+        TunnelStatus::Disconnected | TunnelStatus::Standby => button(text("Connect").size(13))
             .on_press(Message::Connect(t.id.clone()))
             .style(button::primary)
             .padding([4, 12])
@@ -285,6 +286,7 @@ mod tests {
             enabled: true,
             last_error: None,
             stats: None,
+            next_retry_at: None,
         };
         assert_eq!(port_mapping(&t), "localhost:5432 \u{2192} db.internal:5432");
     }
@@ -303,6 +305,7 @@ mod tests {
             enabled: true,
             last_error: None,
             stats: None,
+            next_retry_at: None,
         };
         assert_eq!(port_mapping(&t), "localhost:8080 \u{2192} -");
     }
@@ -326,6 +329,7 @@ mod tests {
                 total_uptime_seconds: 8100,
                 reconnect_count: 0,
             }),
+            next_retry_at: None,
         };
         assert_eq!(status_detail(&t), "uptime: 2h 15m");
     }
@@ -345,6 +349,7 @@ mod tests {
             enabled: true,
             last_error: Some(long_msg),
             stats: None,
+            next_retry_at: None,
         };
         let detail = status_detail(&t);
         assert!(detail.starts_with("Error: "));
