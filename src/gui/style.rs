@@ -71,16 +71,23 @@ pub fn secondary_button(_: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// Borderless accent text, for secondary per-row actions like Log and Edit.
-pub fn link_button(_: &Theme, status: button::Status) -> button::Style {
-    let text_color = match status {
-        button::Status::Active => ACCENT,
-        button::Status::Hovered | button::Status::Pressed => ACCENT_PRESSED,
-        button::Status::Disabled => DISABLED,
+/// Borderless gray button for secondary per-row actions (Log, Edit): quiet
+/// next to the row's main button, with a hover fill so it still reads as
+/// clickable.
+pub fn quiet_button(_: &Theme, status: button::Status) -> button::Style {
+    let (background, text_color) = match status {
+        button::Status::Active => (None, TEXT_SECONDARY),
+        button::Status::Hovered => (Some(CONTROL_HOVER), INK),
+        button::Status::Pressed => (Some(CONTROL_PRESSED), INK),
+        button::Status::Disabled => (None, DISABLED),
     };
     button::Style {
-        background: None,
+        background: background.map(Into::into),
         text_color,
+        border: Border {
+            radius: CONTROL_RADIUS.into(),
+            ..Border::default()
+        },
         ..button::Style::default()
     }
 }

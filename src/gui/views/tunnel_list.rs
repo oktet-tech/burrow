@@ -186,8 +186,8 @@ fn tunnel_row(t: &TunnelInfo, now: u64) -> Element<'_, Message> {
             .width(Length::Fill),
         text(detail).size(12).color(detail_color),
         primary_action(t),
-        link_button("Log", Message::ShowLogs(Some(t.id.clone()))),
-        link_button("Edit", Message::EditTunnel(t.id.clone())),
+        quiet_button("Log", Message::ShowLogs(Some(t.id.clone()))),
+        quiet_button("Edit", Message::EditTunnel(t.id.clone())),
     ]
     .spacing(10)
     .align_y(Center)
@@ -279,11 +279,11 @@ fn small_button<'a>(
         .into()
 }
 
-fn link_button(label: &str, msg: Message) -> Element<'_, Message> {
+fn quiet_button(label: &str, msg: Message) -> Element<'_, Message> {
     button(text(label).size(12))
         .on_press(msg)
-        .style(style::link_button)
-        .padding([4, 2])
+        .style(style::quiet_button)
+        .padding([6, 8])
         .into()
 }
 
