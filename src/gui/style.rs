@@ -32,6 +32,7 @@ const CONTROL_BORDER: Color = Color::from_rgb(0.855, 0.851, 0.831);
 const CONTROL_HOVER: Color = Color::from_rgb(0.949, 0.945, 0.929);
 const CONTROL_PRESSED: Color = Color::from_rgb(0.91, 0.906, 0.886);
 const CONTROL_RADIUS: f32 = 7.0;
+const DANGER_PRESSED: Color = Color::from_rgb(0.58, 0.118, 0.094);
 
 /// Solid accent button for the main action on a surface.
 pub fn primary_button(_: &Theme, status: button::Status) -> button::Style {
@@ -84,6 +85,37 @@ pub fn quiet_button(_: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: background.map(Into::into),
         text_color,
+        border: Border {
+            radius: CONTROL_RADIUS.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
+}
+
+/// Bordered button with red text: a destructive action offered but not yet
+/// confirmed.
+pub fn destructive_button(theme: &Theme, status: button::Status) -> button::Style {
+    let text_color = match status {
+        button::Status::Disabled => DISABLED,
+        _ => ERROR_TEXT,
+    };
+    button::Style {
+        text_color,
+        ..secondary_button(theme, status)
+    }
+}
+
+/// Solid red button for confirming a destructive action.
+pub fn danger_button(_: &Theme, status: button::Status) -> button::Style {
+    let background = match status {
+        button::Status::Active => ERROR_TEXT,
+        button::Status::Hovered | button::Status::Pressed => DANGER_PRESSED,
+        button::Status::Disabled => ERROR_TEXT.scale_alpha(0.45),
+    };
+    button::Style {
+        background: Some(background.into()),
+        text_color: Color::WHITE,
         border: Border {
             radius: CONTROL_RADIUS.into(),
             ..Border::default()

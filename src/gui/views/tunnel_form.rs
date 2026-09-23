@@ -478,21 +478,21 @@ pub fn view<'a>(
                     button(text("Cancel").size(13))
                         .on_press(Message::FormCancelDelete)
                         .style(style::secondary_button)
-                        .padding([4, 12]),
+                        .padding([6, 14]),
                     button(text("Delete").size(13))
                         .on_press(Message::FormDeleteTunnel)
-                        .style(button::danger)
-                        .padding([4, 12]),
+                        .style(style::danger_button)
+                        .padding([6, 14]),
                 ]
                 .spacing(8)
                 .align_y(Center),
             );
         } else {
             form = form.push(
-                button(text("Delete Tunnel").size(13).color(style::ERROR))
+                button(text("Delete Tunnel").size(13))
                     .on_press(Message::FormConfirmDelete)
-                    .style(button::text)
-                    .padding([4, 12]),
+                    .style(style::destructive_button)
+                    .padding([6, 14]),
             );
         }
     }
