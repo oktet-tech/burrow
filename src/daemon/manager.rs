@@ -19,6 +19,8 @@ use super::tunnel::Tunnel;
 const MAX_BACKOFF_SECS: u64 = 300;
 /// A session that stays up this long counts as healthy and resets backoff.
 const STABLE_SESSION_SECS: u64 = 60;
+const STUB_BIND_RETRIES: u32 = 5;
+const STUB_BIND_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 struct ManagedTunnel {
     tunnel: Tunnel,
@@ -57,7 +59,10 @@ impl ManagedTunnel {
         if self.stub_handle.is_some() && self.monitor.is_none() {
             info.status = TunnelStatus::Standby;
         }
-        if self.tunnel.enabled {
+        // Only a live timer makes the time meaningful; a finished or
+        // cancelled task must not leave a countdown behind.
+        let retry_pending = self.reconnect_task.as_ref().is_some_and(|h| !h.is_finished());
+        if self.tunnel.enabled && retry_pending {
             info.next_retry_at = self
                 .next_retry_at
                 .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
@@ -174,26 +179,40 @@ impl TunnelManager {
 
     /// Start the SSH process for a tunnel (user-initiated).
     pub async fn connect(&self, id: &str) -> Result<(), TunnelError> {
-        let mut state = self.inner.lock().await;
-        let exit_tx = state.exit_tx.clone();
-        let mt = state
-            .tunnels
-            .get_mut(id)
-            .ok_or_else(|| TunnelError::NotFound(id.to_string()))?;
+        let (result, rebind_stub, old_stub) = {
+            let mut state = self.inner.lock().await;
+            let exit_tx = state.exit_tx.clone();
+            let mt = state
+                .tunnels
+                .get_mut(id)
+                .ok_or_else(|| TunnelError::NotFound(id.to_string()))?;
 
-        // Cancel any pending reconnect -- user is taking over
-        if let Some(handle) = mt.reconnect_task.take() {
-            handle.abort();
+            // Cancel any pending reconnect -- user is taking over
+            if let Some(handle) = mt.reconnect_task.take() {
+                handle.abort();
+            }
+            mt.next_retry_at = None;
+
+            // Reset backoff so user gets a fresh start
+            mt.consecutive_failures = 0;
+
+            // Stop stub listener if active (frees port for SSH)
+            let old_stub = mt.stub_handle.take();
+
+            let result = start_tunnel(mt, &exit_tx);
+            // The listener was released above; if SSH didn't start, an
+            // on-demand tunnel would otherwise be left with no listener.
+            let rebind = result.is_err() && mt.tunnel.config().mode == TunnelMode::OnDemand;
+            state.notify_changed();
+            (result, rebind, old_stub)
+        };
+        if rebind_stub {
+            // The old listener must be closed before its port can be re-bound
+            if let Some(stub) = old_stub {
+                stub.stop().await;
+            }
+            self.restart_stub_if_needed(id).await;
         }
-
-        // Reset backoff so user gets a fresh start
-        mt.consecutive_failures = 0;
-
-        // Stop stub listener if active (frees port for SSH)
-        mt.stub_handle = None;
-
-        let result = start_tunnel(mt, &exit_tx);
-        state.notify_changed();
         result
     }
 
@@ -336,7 +355,7 @@ impl TunnelManager {
                 .filter(|(_, mt)| {
                     mt.tunnel.enabled
                         && mt.tunnel.config().mode == TunnelMode::OnDemand
-                        && mt.tunnel.status == TunnelStatus::Disconnected
+                        && mt.monitor.is_none()
                         && mt.stub_handle.is_none()
                 })
                 .map(|(id, mt)| {
@@ -377,15 +396,41 @@ impl TunnelManager {
     }
 
     async fn start_stub_for(&self, id: &str, name: &str, port: u16) {
-        match stub::spawn_stub(id.to_string(), name.to_string(), port, self.clone()) {
+        // A port that was just released can read as busy for a moment: a
+        // concurrently forked child briefly holds a copy of the old socket
+        // until it execs. Retry briefly before giving up.
+        let mut attempts = 0;
+        let bound = loop {
+            match stub::spawn_stub(id.to_string(), name.to_string(), port, self.clone()) {
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::AddrInUse
+                        && attempts < STUB_BIND_RETRIES =>
+                {
+                    attempts += 1;
+                    tokio::time::sleep(STUB_BIND_RETRY_DELAY).await;
+                }
+                other => break other,
+            }
+        };
+        match bound {
             Ok(handle) => {
                 let mut state = self.inner.lock().await;
-                if let Some(mt) = state.tunnels.get_mut(id) {
-                    mt.stub_handle = Some(handle);
-                    mt.next_retry_at = None;
-                    // Status now reads as Standby
-                    state.notify_changed();
+                let Some(mt) = state.tunnels.get_mut(id) else {
+                    return;
+                };
+                // Bound without the lock: a disable, connect or mode change
+                // in between means the listener is no longer wanted.
+                let still_wanted = mt.tunnel.enabled
+                    && mt.tunnel.config().mode == TunnelMode::OnDemand
+                    && mt.monitor.is_none()
+                    && mt.stub_handle.is_none();
+                if !still_wanted {
+                    return; // dropping `handle` releases the port
                 }
+                mt.stub_handle = Some(handle);
+                mt.next_retry_at = None;
+                // Status now reads as Standby
+                state.notify_changed();
             }
             Err(e) => {
                 tracing::error!(
@@ -393,6 +438,11 @@ impl TunnelManager {
                     error = %e,
                     "failed to bind stub listener"
                 );
+                let mut state = self.inner.lock().await;
+                if let Some(mt) = state.tunnels.get_mut(id) {
+                    mt.next_retry_at = None;
+                    state.notify_changed();
+                }
             }
         }
     }
@@ -605,8 +655,13 @@ impl TunnelManager {
 
             for id in &to_update {
                 if let Some(mt) = state.tunnels.get_mut(id) {
-                    // Stop stub before config change (mode/port may differ)
+                    // Stop stub and pending retry before config change
+                    // (mode/port may differ)
                     mt.stub_handle = None;
+                    if let Some(handle) = mt.reconnect_task.take() {
+                        handle.abort();
+                    }
+                    mt.next_retry_at = None;
                     let new_cfg = config.tunnel[id].clone();
                     mt.tunnel.update_config(new_cfg, &config.defaults);
                     mt.consecutive_failures = 0;
@@ -852,6 +907,9 @@ impl TunnelManager {
                 };
 
                 if !mt.tunnel.should_reconnect() {
+                    // e.g. mode changed or port conflict: drop the countdown
+                    mt.next_retry_at = None;
+                    state.notify_changed();
                     break;
                 }
 
@@ -882,6 +940,7 @@ impl TunnelManager {
                     }
                     Err(e) => {
                         tracing::warn!(tunnel_id = %id, error = %e, "reconnect failed, giving up");
+                        mt.next_retry_at = None;
                         false
                     }
                 };
@@ -1228,6 +1287,41 @@ mod tests {
 
         mgr.disconnect("dev-db").await.unwrap();
         assert!(mgr.get("dev-db").await.unwrap().next_retry_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_manual_retry_clears_countdown() {
+        let mut config = test_config();
+        let tc = config.tunnel.get_mut("dev-db").unwrap();
+        tc.ssh_binary = Some("false".into());
+        tc.local_port = 59013;
+
+        let mgr = TunnelManager::new();
+        mgr.load_tunnels(&config).await;
+        mgr.connect("dev-db").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(mgr.get("dev-db").await.unwrap().next_retry_at.is_some());
+
+        // "Retry now" that fails before spawning: port taken meanwhile
+        let _blocker = std::net::TcpListener::bind("127.0.0.1:59013").unwrap();
+        assert!(mgr.connect("dev-db").await.is_err());
+        assert!(mgr.get("dev-db").await.unwrap().next_retry_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_connect_now_restores_on_demand_listener() {
+        let mut config = test_config();
+        let tc = config.tunnel.get_mut("proxy").unwrap();
+        tc.ssh_binary = Some("/nonexistent/ssh".into());
+        tc.local_port = 59014;
+
+        let mgr = TunnelManager::new();
+        mgr.load_tunnels(&config).await;
+        mgr.start_on_demand_stubs().await;
+        assert!(mgr.connect("proxy").await.is_err());
+
+        assert_eq!(mgr.get("proxy").await.unwrap().status, TunnelStatus::Standby);
+        mgr.disable("proxy").await.unwrap();
     }
 
     #[test]

@@ -4,14 +4,27 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
-/// Handle to a running stub listener. Drop aborts the task and releases the port.
+/// Handle to a running stub listener. Drop aborts the task, which releases
+/// the port once the runtime next polls it; use `stop` to wait for that.
 pub struct StubHandle {
-    task: JoinHandle<()>,
+    task: Option<JoinHandle<()>>,
+}
+
+impl StubHandle {
+    /// Abort the listener and wait until its socket is closed.
+    pub async fn stop(mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
 }
 
 impl Drop for StubHandle {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(task) = &self.task {
+            task.abort();
+        }
     }
 }
 
@@ -42,7 +55,7 @@ pub fn spawn_stub(
         stub_accept(listener, tunnel_id, tunnel_name, local_port, manager).await;
     });
 
-    Ok(StubHandle { task })
+    Ok(StubHandle { task: Some(task) })
 }
 
 /// Check if a buffer starts with an HTTP method keyword.
