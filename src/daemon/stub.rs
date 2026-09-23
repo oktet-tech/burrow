@@ -168,15 +168,19 @@ async fn stub_accept(
     // Drop listener to free the port for SSH
     drop(listener);
 
-    if is_http {
+    let held = if is_http {
         tracing::info!(tunnel_id = %tunnel_id, "HTTP request detected, serving waiting page");
         serve_waiting_page(stream, &tunnel_name).await;
-        manager.handle_on_demand(&tunnel_id, None, local_port).await;
+        None
     } else {
-        manager
-            .handle_on_demand(&tunnel_id, Some(stream), local_port)
-            .await;
-    }
+        Some(stream)
+    };
+
+    // Run outside this task: handle_on_demand clears the StubHandle, whose
+    // drop aborts this very task and would cancel the call midway.
+    tokio::spawn(async move {
+        manager.handle_on_demand(&tunnel_id, held, local_port).await;
+    });
 }
 
 /// Wait for SSH to bind the port (up to 10s), then proxy bidirectionally.
