@@ -271,8 +271,15 @@ impl TunnelManager {
                 return;
             };
 
-            // Stub task is exiting; clear the handle
-            mt.stub_handle = None;
+            // The trigger runs outside the stub task, so disable, reload or a
+            // user connect may have retired this stub in the meantime.
+            if mt.stub_handle.take().is_none()
+                || !mt.tunnel.enabled
+                || mt.tunnel.config().mode != TunnelMode::OnDemand
+            {
+                tracing::debug!(tunnel_id = %id, "ignoring stale on-demand trigger");
+                return;
+            }
 
             let result = start_tunnel(mt, &exit_tx);
             state.notify_changed();
@@ -328,9 +335,11 @@ impl TunnelManager {
         let info = {
             let state = self.inner.lock().await;
             state.tunnels.get(id).and_then(|mt| {
+                // A live SSH owns the port; binding the stub would break it.
                 if mt.tunnel.config().mode == TunnelMode::OnDemand
                     && mt.tunnel.enabled
                     && mt.stub_handle.is_none()
+                    && mt.monitor.is_none()
                 {
                     Some((mt.tunnel.config().name.clone(), mt.tunnel.config().local_port))
                 } else {
@@ -777,6 +786,9 @@ impl TunnelManager {
                 "scheduling reconnect"
             );
             let inner = Arc::clone(&mgr.inner);
+            if let Some(old) = mt.reconnect_task.take() {
+                old.abort();
+            }
             mt.reconnect_task = Some(tokio::spawn(Self::reconnect_loop(inner, id, delay)));
         } else if mt.tunnel.config().mode == TunnelMode::OnDemand
             && mt.tunnel.enabled
@@ -788,6 +800,9 @@ impl TunnelManager {
                 "scheduling on-demand listener re-bind"
             );
             let mgr = mgr.clone();
+            if let Some(old) = mt.reconnect_task.take() {
+                old.abort();
+            }
             mt.reconnect_task = Some(tokio::spawn(async move {
                 tokio::time::sleep(delay).await;
                 mgr.restart_stub_if_needed(&id).await;
