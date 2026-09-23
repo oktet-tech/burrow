@@ -1,14 +1,14 @@
 // On macOS, notify-rust swizzles NSBundle.bundleIdentifier which corrupts
 // winit/iced, and osascript intermittently opens Script Editor.
-// Use NSUserNotificationCenter via raw objc FFI (same pattern as hide_from_dock).
+// Use NSUserNotificationCenter via raw objc FFI (same pattern as the Dock helpers in gui/mod.rs).
 
 use std::sync::{Mutex, OnceLock};
 
 // -- Notification click channel --
 //
 // Platform-specific callbacks send () through this channel when the user
-// clicks a notification. The GUI picks it up via take_click_receiver()
-// and opens the main window.
+// clicks a notification or the Dock icon. The GUI picks it up via
+// take_click_receiver() and opens the main window.
 
 static CLICK_CHANNEL: OnceLock<(
     std::sync::mpsc::Sender<()>,
@@ -31,7 +31,8 @@ pub fn take_click_receiver() -> Option<std::sync::mpsc::Receiver<()>> {
     CLICK_CHANNEL.get()?.1.lock().ok()?.take()
 }
 
-fn signal_click() {
+/// Ask the GUI to open the main window (notification or Dock click).
+pub fn request_open_window() {
     if let Some((tx, _)) = CLICK_CHANNEL.get() {
         let _ = tx.send(());
     }
@@ -59,7 +60,7 @@ fn install_macos_delegate() {
         _center: *mut std::ffi::c_void,
         _notification: *mut std::ffi::c_void,
     ) {
-        signal_click();
+        request_open_window();
     }
 
     unsafe {
@@ -197,7 +198,7 @@ fn send(title: &str, body: &str) {
             Ok(handle) => {
                 handle.wait_for_action(|action| {
                     if action == "default" {
-                        signal_click();
+                        request_open_window();
                     }
                 });
             }

@@ -743,8 +743,8 @@ burrow --gui        # Alternative syntax
 GUI process:
 1. Auto-starts daemon if not running
 2. Connects to daemon via IPC
-3. Stays in menu bar (no dock icon on macOS)
-4. Window hidden by default, shown via tray menu
+3. Shows both a menu bar icon and a Dock icon on macOS
+4. Window hidden by default, shown via tray menu or by clicking the Dock icon
 
 ---
 

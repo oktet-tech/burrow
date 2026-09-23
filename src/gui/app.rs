@@ -108,10 +108,10 @@ pub struct BurrowApp {
 impl BurrowApp {
     /// Called inside the iced event loop, after NSApplication is initialized.
     pub fn new() -> (Self, Task<Message>) {
-        #[cfg(target_os = "macos")]
-        super::hide_from_dock();
-
         notifications::init();
+        #[cfg(target_os = "macos")]
+        super::install_dock_reopen_handler();
+
         let tray = tray::create_tray();
 
         (

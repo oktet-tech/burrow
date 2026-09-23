@@ -15,7 +15,7 @@ use app::BurrowApp;
 pub fn launch() {
     ensure_daemon();
 
-    // Tray and hide_from_dock happen inside new(), after iced has
+    // Tray and the Dock reopen hook are set up inside new(), after iced has
     // initialized NSApplication. Creating NSApplication ourselves first
     // (via raw objc_msgSend) conflicts with winit/objc2's initialization.
     iced::daemon(BurrowApp::new, BurrowApp::update, BurrowApp::view)
@@ -96,7 +96,7 @@ mod macos {
     }
 
     type SendNoArgs = unsafe extern "C" fn(Obj, Sel) -> Obj;
-    type SendI64 = unsafe extern "C" fn(Obj, Sel, i64) -> Obj;
+    type SendObj = unsafe extern "C" fn(Obj, Sel, Obj);
     type SendBool = unsafe extern "C" fn(Obj, Sel, bool) -> ();
     type SendNoArgsRect = unsafe extern "C" fn(Obj, Sel) -> NSRect;
 
@@ -109,13 +109,56 @@ mod macos {
         }
     }
 
-    /// Set activation policy to Accessory (menu bar only, no Dock/Cmd-Tab).
-    pub fn hide_from_dock() {
+    /// Open the main window when the Dock icon is clicked with no visible
+    /// windows. winit's app delegate lacks `applicationShouldHandleReopen:`,
+    /// so we graft it onto the delegate class at runtime.
+    pub fn install_dock_reopen_handler() {
+        unsafe extern "C" {
+            fn object_getClass(obj: Obj) -> Obj;
+            fn class_addMethod(cls: Obj, sel: Sel, imp: *const (), types: *const i8) -> i8;
+        }
+
+        unsafe extern "C" fn should_handle_reopen(
+            _this: Obj,
+            _sel: Sel,
+            _sender: Obj,
+            has_visible_windows: i8,
+        ) -> i8 {
+            if has_visible_windows != 0 {
+                return 1; // let AppKit bring existing windows forward
+            }
+            super::notifications::request_open_window();
+            0
+        }
+
         unsafe {
-            let sel = sel_registerName(c"setActivationPolicy:".as_ptr());
-            let send: SendI64 = std::mem::transmute(objc_msgSend as *const ());
-            // NSApplicationActivationPolicyAccessory = 1
-            send(shared_app(), sel, 1);
+            let send: SendNoArgs = std::mem::transmute(objc_msgSend as *const ());
+            let set_obj: SendObj = std::mem::transmute(objc_msgSend as *const ());
+            let app = shared_app();
+            let sel_delegate = sel_registerName(c"delegate".as_ptr());
+            let delegate = send(app, sel_delegate);
+            if delegate.is_null() {
+                tracing::warn!("no NSApplication delegate, Dock click won't open window");
+                return;
+            }
+
+            let sel_reopen =
+                sel_registerName(c"applicationShouldHandleReopen:hasVisibleWindows:".as_ptr());
+            let added = class_addMethod(
+                object_getClass(delegate),
+                sel_reopen,
+                should_handle_reopen as *const (),
+                c"c@:@c".as_ptr(),
+            );
+            if added == 0 {
+                tracing::warn!("delegate already handles reopen, Dock hook not installed");
+                return;
+            }
+
+            // NSApplication caches which optional delegate methods exist at
+            // setDelegate: time; re-assign so it notices the new one.
+            let sel_set_delegate = sel_registerName(c"setDelegate:".as_ptr());
+            set_obj(app, sel_set_delegate, delegate);
         }
     }
 
@@ -149,7 +192,7 @@ mod macos {
 }
 
 #[cfg(target_os = "macos")]
-pub(super) use macos::{activate_app, hide_from_dock, main_screen_size};
+pub(super) use macos::{activate_app, install_dock_reopen_handler, main_screen_size};
 
 #[cfg(not(target_os = "macos"))]
 pub(super) fn main_screen_size() -> (f64, f64) {

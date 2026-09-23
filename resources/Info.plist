@@ -16,8 +16,6 @@
     <string>APPL</string>
     <key>CFBundleExecutable</key>
     <string>burrow</string>
-    <key>LSUIElement</key>
-    <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>CFBundleIconFile</key>
