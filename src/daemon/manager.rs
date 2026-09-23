@@ -47,6 +47,9 @@ impl Inner {
     /// Notify state persistence and broadcast a tunnel snapshot to GUI subscribers.
     fn notify_changed(&self) {
         self.state_dirty.notify_one();
+        if self.event_tx.receiver_count() == 0 {
+            return;
+        }
         let snapshot: Vec<TunnelInfo> = self
             .tunnels
             .values()
