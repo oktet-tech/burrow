@@ -1,5 +1,5 @@
-use std::fs::{self, OpenOptions};
-use std::io;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
 const MAX_LOG_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
@@ -50,8 +50,49 @@ fn rotate_if_needed(path: &PathBuf) -> io::Result<()> {
     Ok(())
 }
 
-/// Set up tracing with file output and stderr output.
-/// Rotates log file on startup if it exceeds the size limit.
+/// Append-only log file that rotates once it grows past MAX_LOG_SIZE, so a
+/// long-running daemon can't grow it without bound.
+struct RotatingFile {
+    path: PathBuf,
+    file: File,
+    size: u64,
+}
+
+impl RotatingFile {
+    fn open(path: PathBuf) -> io::Result<Self> {
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let size = file.metadata()?.len();
+        Ok(Self { path, file, size })
+    }
+
+    fn rotate(&mut self) -> io::Result<()> {
+        // Checks the on-disk size: another process sharing the file may
+        // already have rotated it.
+        rotate_if_needed(&self.path)?;
+        self.file = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        self.size = self.file.metadata()?.len();
+        Ok(())
+    }
+}
+
+impl Write for RotatingFile {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.size >= MAX_LOG_SIZE && self.rotate().is_err() {
+            // Keep logging to the current file; retry after another full cycle.
+            self.size = 0;
+        }
+        let n = self.file.write(buf)?;
+        self.size += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+/// Set up tracing with file output, plus stderr when it is a terminal.
+/// The log file rotates at startup and whenever it exceeds the size limit.
 /// When `broadcast` is provided, log events are also pushed into the broadcast
 /// channel for IPC subscribers (daemon mode).
 pub fn init_logging(broadcast: Option<&super::log_broadcast::LogBroadcast>) {
@@ -68,10 +109,7 @@ pub fn init_logging(broadcast: Option<&super::log_broadcast::LogBroadcast>) {
     let env_filter = tracing_subscriber::EnvFilter::try_from_env("BURROW_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path);
+    let file = RotatingFile::open(path.clone());
 
     let broadcast_layer = broadcast.map(|b| b.layer());
 
@@ -83,8 +121,10 @@ pub fn init_logging(broadcast: Option<&super::log_broadcast::LogBroadcast>) {
                 .with_writer(std::sync::Mutex::new(file))
                 .with_ansi(false);
 
-            let stderr_layer = tracing_subscriber::fmt::layer()
-                .with_writer(std::io::stderr);
+            // The daemon's stderr is /dev/null; formatting for it is wasted work.
+            let stderr_layer = io::stderr()
+                .is_terminal()
+                .then(|| tracing_subscriber::fmt::layer().with_writer(io::stderr));
 
             tracing_subscriber::registry()
                 .with(env_filter)
@@ -189,6 +229,19 @@ mod tests {
             "slot4"
         );
         // slot5 (the oldest) was overwritten
+    }
+
+    #[test]
+    fn rotating_file_rotates_past_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("burrow.log");
+        fs::write(&path, vec![b'x'; MAX_LOG_SIZE as usize]).unwrap();
+
+        let mut file = RotatingFile::open(path.clone()).unwrap();
+        file.write_all(b"fresh line\n").unwrap();
+
+        assert!(dir.path().join("burrow.log.1").exists());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "fresh line\n");
     }
 
     #[test]
