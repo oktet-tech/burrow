@@ -15,6 +15,8 @@ use super::stub;
 use super::tunnel::{read_stderr, Tunnel};
 
 const MAX_BACKOFF_SECS: u64 = 300;
+/// A session that stays up this long counts as healthy and resets backoff.
+const STABLE_SESSION_SECS: u64 = 60;
 
 struct ManagedTunnel {
     tunnel: Tunnel,
@@ -23,14 +25,18 @@ struct ManagedTunnel {
     monitor: Option<JoinHandle<()>>,
     /// Handle to a pending reconnection timer. Aborting cancels reconnect.
     reconnect_task: Option<JoinHandle<()>>,
-    /// Consecutive failures since last successful connect. Drives backoff.
+    /// Consecutive short-lived sessions. Drives backoff.
     consecutive_failures: u32,
+    /// Bumped on every spawn and disconnect so exit events from an older
+    /// SSH process can't clobber the current one.
+    generation: u64,
     /// On-demand stub listener. Drop aborts and releases the port.
     stub_handle: Option<stub::StubHandle>,
 }
 
 struct ExitEvent {
     id: String,
+    generation: u64,
     code: Option<i32>,
     stderr: Option<String>,
 }
@@ -69,8 +75,19 @@ fn backoff_delay(consecutive_failures: u32) -> Duration {
     Duration::from_secs(secs)
 }
 
+/// Failure count after an SSH exit. A long healthy session starts backoff
+/// over; a short one (auth/DNS/forward failure) escalates it.
+fn next_failure_count(current: u32, session_secs: u64) -> u32 {
+    if session_secs >= STABLE_SESSION_SECS {
+        1
+    } else {
+        current.saturating_add(1)
+    }
+}
+
 /// Start SSH and spawn a monitor task. Caller must hold the lock.
-/// Resets consecutive_failures on success.
+/// Backoff is not reset here: SSH spawning says nothing about whether the
+/// session will survive authentication.
 fn start_tunnel(
     mt: &mut ManagedTunnel,
     exit_tx: &mpsc::UnboundedSender<ExitEvent>,
@@ -91,6 +108,8 @@ fn start_tunnel(
     let stderr_handle = child.stderr.take();
     let tunnel_id = id;
     let exit_tx = exit_tx.clone();
+    mt.generation += 1;
+    let generation = mt.generation;
 
     let handle = tokio::spawn(async move {
         let wait_result = child.wait().await;
@@ -98,13 +117,13 @@ fn start_tunnel(
         let code = wait_result.ok().and_then(|s| s.code());
         let _ = exit_tx.send(ExitEvent {
             id: tunnel_id,
+            generation,
             code,
             stderr,
         });
     });
 
     mt.monitor = Some(handle);
-    mt.consecutive_failures = 0;
     Ok(())
 }
 
@@ -138,6 +157,7 @@ impl TunnelManager {
                     monitor: None,
                     reconnect_task: None,
                     consecutive_failures: 0,
+                    generation: 0,
                     stub_handle: None,
                 },
             );
@@ -186,6 +206,7 @@ impl TunnelManager {
         }
 
         mt.consecutive_failures = 0;
+        mt.generation += 1;
         mt.tunnel.record_disconnect();
         state.notify_changed();
         Ok(())
@@ -559,6 +580,7 @@ impl TunnelManager {
                         monitor: None,
                         reconnect_task: None,
                         consecutive_failures: 0,
+                        generation: 0,
                         stub_handle: None,
                     },
                 );
@@ -723,13 +745,18 @@ impl TunnelManager {
                     let Some(mt) = state.tunnels.get_mut(&event.id) else {
                         continue;
                     };
+                    if event.generation != mt.generation {
+                        tracing::debug!(tunnel_id = %event.id, "ignoring exit of stale SSH process");
+                        continue;
+                    }
 
                     mt.monitor = None;
+                    let session_secs = mt.tunnel.session_start_elapsed();
                     mt.tunnel.record_exit(event.code, event.stderr);
+                    mt.consecutive_failures = next_failure_count(mt.consecutive_failures, session_secs);
 
                     // Auto-mode: schedule reconnect with backoff
                     let result = if mt.tunnel.should_reconnect() {
-                        mt.consecutive_failures += 1;
                         let delay = backoff_delay(mt.consecutive_failures);
 
                         tracing::info!(
@@ -911,6 +938,17 @@ mod tests {
         }
     }
 
+    /// Script that ignores SSH arguments and stays alive, unlike `sleep`,
+    /// which rejects the `-N` flag and exits immediately.
+    fn long_running_fake_ssh() -> (tempfile::TempDir, String) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fake-ssh");
+        std::fs::write(&path, "#!/bin/sh\nexec sleep 60\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, path.to_string_lossy().into_owned())
+    }
+
     #[tokio::test]
     async fn load_populates_tunnels() {
         let mgr = TunnelManager::new();
@@ -1023,6 +1061,64 @@ mod tests {
         assert_eq!(backoff_delay(4), Duration::from_secs(16));
         assert_eq!(backoff_delay(5), Duration::from_secs(32));
         assert_eq!(backoff_delay(8), Duration::from_secs(256));
+    }
+
+    #[test]
+    fn short_sessions_escalate_backoff() {
+        assert_eq!(next_failure_count(0, 0), 1);
+        assert_eq!(next_failure_count(1, 5), 2);
+        assert_eq!(next_failure_count(4, STABLE_SESSION_SECS - 1), 5);
+    }
+
+    #[test]
+    fn stable_session_resets_backoff() {
+        assert_eq!(next_failure_count(7, STABLE_SESSION_SECS), 1);
+    }
+
+    #[tokio::test]
+    async fn repeated_quick_exits_grow_backoff() {
+        let mut config = test_config();
+        let tc = config.tunnel.get_mut("dev-db").unwrap();
+        tc.ssh_binary = Some("false".into());
+        tc.local_port = 59008;
+
+        let mgr = TunnelManager::new();
+        mgr.load_tunnels(&config).await;
+        mgr.connect("dev-db").await.unwrap();
+
+        // First exit -> 2s backoff; first reconnect exits too -> 4s backoff
+        tokio::time::sleep(Duration::from_millis(2400)).await;
+        let failures = mgr.inner.lock().await.tunnels["dev-db"].consecutive_failures;
+        mgr.disconnect("dev-db").await.unwrap();
+        assert_eq!(failures, 2);
+    }
+
+    #[tokio::test]
+    async fn stale_exit_event_is_ignored() {
+        let mut config = test_config();
+        let (_dir, fake_ssh) = long_running_fake_ssh();
+        let tc = config.tunnel.get_mut("dev-db").unwrap();
+        tc.ssh_binary = Some(fake_ssh);
+        tc.local_port = 59009;
+
+        let mgr = TunnelManager::new();
+        mgr.load_tunnels(&config).await;
+        mgr.connect("dev-db").await.unwrap();
+
+        let exit_tx = mgr.inner.lock().await.exit_tx.clone();
+        exit_tx
+            .send(ExitEvent {
+                id: "dev-db".into(),
+                generation: 0,
+                code: Some(255),
+                stderr: None,
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let info = mgr.get("dev-db").await.unwrap();
+        mgr.disconnect("dev-db").await.unwrap();
+        assert_ne!(info.status, TunnelStatus::Error);
     }
 
     #[test]
