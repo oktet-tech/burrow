@@ -103,9 +103,12 @@ pub const INTERNAL_ERROR: i32 = -32603;
 
 // Application-specific codes (reserved range -32000..-32099)
 pub const TUNNEL_NOT_FOUND: i32 = -32000;
+pub const TUNNEL_ALREADY_CONNECTED: i32 = -32001;
+pub const TUNNEL_START_FAILED: i32 = -32002;
 pub const CONFIG_ERROR: i32 = -32003;
 pub const TUNNEL_ALREADY_EXISTS: i32 = -32004;
 pub const VALIDATION_ERROR: i32 = -32005;
+pub const PORT_IN_USE: i32 = -32006;
 
 // -- Domain types (shared between requests and responses) --
 

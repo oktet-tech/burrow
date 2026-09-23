@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 use crate::config::schema::{Config, TunnelMode};
 use crate::ipc::protocol::{BulkResult, ReloadResult, TunnelInfo, TunnelStatus};
 
+use super::error::TunnelError;
 use super::monitor::{Monitor, MonitorEvent};
 use super::state::{self, PersistedTunnel, PersistedTunnelStats, State};
 use super::stub;
@@ -84,19 +85,23 @@ fn next_failure_count(current: u32, session_secs: u64) -> u32 {
 fn start_tunnel(
     mt: &mut ManagedTunnel,
     exit_tx: &mpsc::UnboundedSender<MonitorEvent>,
-) -> Result<(), String> {
+) -> Result<(), TunnelError> {
     let id = mt.tunnel.id.clone();
 
     if mt.tunnel.status == TunnelStatus::Connected
         || mt.tunnel.status == TunnelStatus::Connecting
     {
-        return Err(format!("tunnel '{id}' is already connected"));
+        return Err(TunnelError::AlreadyConnected(id));
     }
 
-    let child = mt
-        .tunnel
-        .start()
-        .map_err(|e| format!("failed to start tunnel '{id}': {e}"))?;
+    let child = mt.tunnel.start().map_err(|source| {
+        if source.kind() == std::io::ErrorKind::AddrInUse {
+            let port = mt.tunnel.config().local_port;
+            TunnelError::PortInUse { id: id.clone(), port }
+        } else {
+            TunnelError::Start { id: id.clone(), source }
+        }
+    })?;
 
     mt.generation += 1;
     mt.monitor = Some(Monitor::spawn(id, mt.generation, child, exit_tx.clone()));
@@ -142,13 +147,13 @@ impl TunnelManager {
     }
 
     /// Start the SSH process for a tunnel (user-initiated).
-    pub async fn connect(&self, id: &str) -> Result<(), String> {
+    pub async fn connect(&self, id: &str) -> Result<(), TunnelError> {
         let mut state = self.inner.lock().await;
         let exit_tx = state.exit_tx.clone();
         let mt = state
             .tunnels
             .get_mut(id)
-            .ok_or_else(|| format!("tunnel '{id}' not found"))?;
+            .ok_or_else(|| TunnelError::NotFound(id.to_string()))?;
 
         // Cancel any pending reconnect -- user is taking over
         if let Some(handle) = mt.reconnect_task.take() {
@@ -167,12 +172,12 @@ impl TunnelManager {
     }
 
     /// Kill the SSH process for a tunnel (user-initiated).
-    pub async fn disconnect(&self, id: &str) -> Result<(), String> {
+    pub async fn disconnect(&self, id: &str) -> Result<(), TunnelError> {
         let mut state = self.inner.lock().await;
         let mt = state
             .tunnels
             .get_mut(id)
-            .ok_or_else(|| format!("tunnel '{id}' not found"))?;
+            .ok_or_else(|| TunnelError::NotFound(id.to_string()))?;
 
         // Wait for SSH to be reaped so its port is free for a stub or reconnect.
         if let Some(monitor) = mt.monitor.take() {
@@ -190,13 +195,13 @@ impl TunnelManager {
     }
 
     /// Enable a tunnel. Auto-connect if mode==auto, start stub if on-demand.
-    pub async fn enable(&self, id: &str) -> Result<(), String> {
+    pub async fn enable(&self, id: &str) -> Result<(), TunnelError> {
         let mode = {
             let mut state = self.inner.lock().await;
             let mt = state
                 .tunnels
                 .get_mut(id)
-                .ok_or_else(|| format!("tunnel '{id}' not found"))?;
+                .ok_or_else(|| TunnelError::NotFound(id.to_string()))?;
 
             if mt.tunnel.enabled {
                 return Ok(());
@@ -222,13 +227,13 @@ impl TunnelManager {
     }
 
     /// Disable a tunnel. Disconnects if connected, stops stub if on-demand.
-    pub async fn disable(&self, id: &str) -> Result<(), String> {
+    pub async fn disable(&self, id: &str) -> Result<(), TunnelError> {
         let was_active = {
             let mut state = self.inner.lock().await;
             let mt = state
                 .tunnels
                 .get_mut(id)
-                .ok_or_else(|| format!("tunnel '{id}' not found"))?;
+                .ok_or_else(|| TunnelError::NotFound(id.to_string()))?;
 
             mt.tunnel.enabled = false;
             mt.stub_handle = None;

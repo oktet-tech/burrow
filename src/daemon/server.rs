@@ -223,7 +223,7 @@ async fn handle_request(
         },
         Request::TunnelConnect { id: tid } => match mgr.connect(&tid).await {
             Ok(()) => RpcResponse::success(id, json!({ "status": "connected" })),
-            Err(msg) => RpcResponse::error(id, protocol::TUNNEL_NOT_FOUND, msg),
+            Err(e) => RpcResponse::error(id, e.rpc_code(), e.to_string()),
         },
         Request::TunnelDisconnect { id: tid } => match mgr.disconnect(&tid).await {
             Ok(()) => {
@@ -231,15 +231,15 @@ async fn handle_request(
                 mgr.restart_stub_if_needed(&tid).await;
                 RpcResponse::success(id, json!({ "status": "disconnected" }))
             }
-            Err(msg) => RpcResponse::error(id, protocol::TUNNEL_NOT_FOUND, msg),
+            Err(e) => RpcResponse::error(id, e.rpc_code(), e.to_string()),
         },
         Request::TunnelEnable { id: tid } => match mgr.enable(&tid).await {
             Ok(()) => RpcResponse::success(id, json!({ "status": "enabled" })),
-            Err(msg) => RpcResponse::error(id, protocol::TUNNEL_NOT_FOUND, msg),
+            Err(e) => RpcResponse::error(id, e.rpc_code(), e.to_string()),
         },
         Request::TunnelDisable { id: tid } => match mgr.disable(&tid).await {
             Ok(()) => RpcResponse::success(id, json!({ "status": "disabled" })),
-            Err(msg) => RpcResponse::error(id, protocol::TUNNEL_NOT_FOUND, msg),
+            Err(e) => RpcResponse::error(id, e.rpc_code(), e.to_string()),
         },
         Request::TunnelConnectAll => {
             let result = mgr.connect_all().await;

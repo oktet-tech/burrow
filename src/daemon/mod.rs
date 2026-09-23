@@ -1,3 +1,4 @@
+pub mod error;
 pub mod manager;
 mod monitor;
 pub mod network;
