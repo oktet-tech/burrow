@@ -539,20 +539,19 @@ impl BurrowApp {
 
     // -- Window management --
 
+    /// Show the main window: focus the existing one in place, or open a new
+    /// one if it was closed.
     fn open_window(&mut self) -> Task<Message> {
         #[cfg(target_os = "macos")]
         super::activate_app();
 
-        // Close existing window if any, then open fresh
-        let close_task = if let Some(old_id) = self.window_id.take() {
-            tracing::debug!(?old_id, "closing stale window");
-            window::close(old_id)
-        } else {
-            Task::none()
-        };
-
         if self.logs_dirty {
             self.rebuild_log_content();
+        }
+
+        if let Some(id) = self.window_id {
+            // Reuse it: recreating would reset the user's position and size.
+            return window::minimize(id, false).chain(window::gain_focus(id));
         }
 
         let (_, screen_height) = super::main_screen_size();
@@ -564,9 +563,7 @@ impl BurrowApp {
         self.window_id = Some(id);
         tracing::debug!(?id, "opening window");
 
-        close_task
-            .chain(open.discard())
-            .chain(window::gain_focus(id))
+        open.discard().chain(window::gain_focus(id))
     }
 
     fn quit(&self) -> Task<Message> {
